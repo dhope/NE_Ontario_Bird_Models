@@ -466,6 +466,7 @@ run_brt_preds <- function(spp){
   )
   
   mf_r <- crop(predicted_raster, st_bbox(st_transform(st_buffer(mf_route, 20000), st_crs(predicted_raster))))
+  quat_loc <- st_crop(quat, st_bbox(st_transform(st_buffer(mf_route, 20000), st_crs(predicted_raster))))
   
   cairo_pdf(g("{out_dir}/{spp}_time_map_MFCAR.pdf"), fallback_resolution = 300, height = 17, width = 11)
   ggplot( ) + tidyterra::geom_spatraster(data = mf_r) +
@@ -473,10 +474,11 @@ run_brt_preds <- function(spp){
     tidyterra::scale_fill_whitebox_c(
       palette = "muted",#breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
       # labels = scales::label_number(suffix = "indiv/ha"),
-      n.breaks = 8,limits= c(min_q, quantile(p, 0.999, na.rm=T)),
+      n.breaks = 8,#limits= c(min_q, quantile(p, 0.999, na.rm=T)),
       guide = guide_legend(reverse = TRUE))  +
     labs(fill = "individuals/ha", title = spp,
-         colour = "#\nNon-zero\ncounts") 
+         colour = "#\nNon-zero\ncounts") +
+    geom_sf(data = quat_loc, fill = NA, colour = 'white')
   dev.off()
   
   map_plot <-  ggplot() +

@@ -1,5 +1,5 @@
 source("R/06_BRT_time.R")
-use_training_data <- FALSE
+use_training_data <- TRUE
 if(!use_training_data){
 test_training_data <- read_rds(g("output/{date_compiled}_test_training_data.rds"))
 test_locations <- test_training_data$test_locations
@@ -65,8 +65,8 @@ test_out_of_sample <- function(spp, write_to_file){
   list2env(prep_brt_data(spp), environment())
   if(use_training_data) df_std$test_group <- "Train"
   
-  fit_workflow <- bundle::unbundle(read_rds(glue::glue("{bundle_locs}/{spp}_time_bundle.rds")))
-  
+  fit_workflow <- read_rds(glue::glue("{bundle_locs}/{spp}_time_bundle.rds"))#)
+  # bundle::unbundle(
   
   
   gen_tests <- function(test_group_){
@@ -115,7 +115,7 @@ test_out_of_sample <- function(spp, write_to_file){
   
   test_metrics <- get_eval_metrics(df = test_res, spp)
   
-  
+  if(sum(test_res$y)>0){
   test_roc_curve <- 
   roc_curve(test_res, obs_yn, dpois_obs) |>
     ggplot(aes(x = 1 - specificity, y = sensitivity)) +
@@ -143,6 +143,9 @@ test_out_of_sample <- function(spp, write_to_file){
     ggdist::stat_dist_halfeye() + 
     labs(y = "Probability of observing a bird", x = "Observed Count",
          title = glue::glue("{spp} - {test_group_}"))
+  } else{p_obs <- NULL
+  test_predictions_plot <- NULL
+  test_roc_curve <- NULL}
   
   
  
@@ -173,25 +176,34 @@ test_out_of_sample <- function(spp, write_to_file){
       g("{out_dir}/{ifelse(use_training_data, 'train_', '')}test_predictions.csv") )
     
     withr::with_package('patchwork',{
+      # browser()
+      if(!all(list_c(map(tr_output$plot_roc, is.null)))){try({
       ggsave( g("{out_dir}/{ifelse(use_training_data, 'train_', '')}test_roc.jpeg"),
               patchwork::wrap_plots(tr_output$plot_roc, nrow=1), width = 12,
               height = 7
               )
+      })
       
+        try({
       ggsave( g("{out_dir}/{ifelse(use_training_data, 'train_', '')}test_predictions.jpeg"),
               patchwork::wrap_plots(tr_output$plot_predictions, nrow = 1), width = 12,
               height = 7
-      )    
+      )    })
+        
+        try({
       ggsave( g("{out_dir}/{ifelse(use_training_data, 'train_', '')}test_predictions_pobs.jpeg"),
               patchwork::wrap_plots(tr_output$plot_pobs, nrow=1), width = 12,
               height = 7
-      )
+      )})
+      }
     })
     
     
   }
   
+  if(!write_to_file){
   return(output_test)
+  }
   
   
 }
@@ -202,8 +214,11 @@ test_out_of_sample <- function(spp, write_to_file){
 list_modes <- list.files(bundle_locs, pattern = "\\w{4}_time_bundle.rds") |> 
   str_extract("\\w{4}(?=_)")
 
-evaluation_results <- map(str_subset(list_modes, "PAWA|ATSP", negate = T), test_out_of_sample, write_to_file=T) # ATSP needs to be run again
+evaluation_results <- map(list_modes[59:length(list_modes)],#[(51+21):length(list_modes)],
+                          # str_subset(list_modes, "PAWA|ATSP", negate = T), 
+                          test_out_of_sample, write_to_file=T) # ATSP needs to be run again
 
 
 metrics <- 
-read_csv(list.files( BRT_output_loc, "test_metrics.csv", full.names = T, recursive = T))
+map(list.files( BRT_output_loc, "test_metrics.csv", full.names = T, recursive = T), read_csv) |> 
+  list_rbind()

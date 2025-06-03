@@ -107,7 +107,7 @@ prep_inla_data <- function(spp, run_a2){
       unique() 
     if(length(spp_name)!=1)rlang::abort("unable to identify species name")
   } else { spp_name <- "Palm Warbler"}
-  counts_spp <- filter(counts, species_name_clean == spp_name) |> 
+  counts_spp <- filter(counts, species_name_clean == spp_name | species_code == spp) |> 
     full_join(recordings %>%{
       if("geometry" %in% names(.)){
         dplyr::select(.,-geometry)} else{.}},
@@ -257,6 +257,10 @@ run_inlabru <- function(spp){
      filter(location %in% setup_dat$location) |> 
      dplyr::select(location,where(~{!is.factor(.x) & !is.character(.x)}),
                    -site_id_agg, -X, -Y) |> 
+     left_join(
+       summarise(counts_spp, mean_count = mean(y), .by = location),
+       by = join_by(location)
+     ) |> 
      st_drop_geometry()
    # library(usdm)
    # vifSel <- vifstep(data.frame(pca_cov[,-1]), th = 5,
@@ -270,14 +274,15 @@ run_inlabru <- function(spp){
    if(file.exists(brt_vi)){
      top_vi <- read_csv(brt_vi) |> 
        filter(!Variable  %in% c("X" ,"Y", "doy", "t2se","year",
-                                "Time_period_Dusk","total_100","event_gr_Dusk", "total_500") ) |> 
+                                "Time_period_Dusk","total_100","event_gr_Dusk", "total_500"),
+              str_detect(Variable,  "Rec_length",negate = T)) |> 
        arrange(desc(Importance)) |> 
        mutate(cVI = cumsum(Importance),
               dcVI = cVI- lag(cVI, default = 0))
      ranv <- top_vi$cVI[top_vi=="random_val"]
      
      inc_vi <- top_vi |> filter(cVI<min(0.8, ranv) & #!Variable %in% withNA &
-                                  Variable %in% names(spatial_cov)) |>
+                                  str_remove(Variable, "_X\\d+") %in% names(spatial_cov)) |>
        pull(Variable)
      
      
@@ -290,15 +295,22 @@ run_inlabru <- function(spp){
    
    
    
-   pca_rec <-
+   dat_rec <-
      recipe(data = pca_cov, formula = ~ .) %>%
      update_role(location, new_role = "id") %>%
+     update_role(mean_count, new_role = "outcome") %>%
      step_zv(all_predictors()) |> 
      step_impute_median(all_numeric_predictors()) |> 
      step_corr(all_numeric_predictors(), threshold = 0.85) |> 
      step_center(all_predictors()) %>%
-     step_scale(all_predictors()) %>%
+     step_scale(all_predictors()) 
+   
+   pca_rec <- dat_rec %>%
+     step_rm(mean_count) |> 
      step_pca(all_numeric_predictors(), id = "pca", num_comp = 10)
+   
+   pls_rec <- dat_rec %>%
+     step_pls(all_numeric_predictors(),outcome ='mean_count' , num_comp = 10)
    # embed::step_umap(all_numeric_predictors(), outcome = vars(avg_price_per_room))
    # step_spline_natural(arrival_date_num, deg_free = 10)
    
@@ -306,6 +318,8 @@ run_inlabru <- function(spp){
    pca_loading <- tidy(pca_prep, id="pca")
    pca_variances <- tidy(pca_prep, id = "pca", type = "variance")
    pca_out <- bake(pca_prep, new_data=NULL)
+   
+   pls_out <- prep(pls_rec) |> bake(new_data = NULL) 
    # pca <- prcomp(cov[,-1], retx=TRUE, center=TRUE, scale.=TRUE)
    # pca_pred <- predict(pca)
    
@@ -328,7 +342,8 @@ run_inlabru <- function(spp){
                    # es_f,
                    # all_of(inc_vi)
      ) |> 
-     left_join(pca_out |> mutate(across(location, as.character)), by = join_by(location)) %>% {
+     left_join(pca_out |> mutate(across(location, as.character)), by = join_by(location)) |> 
+     left_join(pls_out  |> mutate(across(location, as.character)), by = join_by(location)) %>% {
        if(length(included_factors)>0){
          left_join(., distinct(spatial_cov) |> st_drop_geometry() |> 
                      select(location,{{included_factors}}),
@@ -337,7 +352,7 @@ run_inlabru <- function(spp){
          .
        }
      } |> 
-     dplyr::select(-location) |> 
+     dplyr::select(-location, -mean_count) |> 
      filter(!is.na(offset)) |>
      dplyr::select(where(~sum(is.na(.x))!=length(.x) ))  |> 
      # dplyr::select(-c(project_id, NA_codes, location_id,sum_count, 
@@ -360,6 +375,7 @@ run_inlabru <- function(spp){
    
    write_rds(offsets_spp, g("{out_dir_tmp}/offsets_spp.rds"))
    write_rds(pca_bun,g("{out_dir_tmp}/pca_bundle.rds") )
+   write_rds(bundle::bundle(prep(pls_rec)),g("{out_dir_tmp}/pls_bundle.rds") )
    write_rds(pca_cov,g("{out_dir_tmp}/pca_cov.rds") )
    
   sd_mn <- 
@@ -367,6 +383,9 @@ run_inlabru <- function(spp){
     left_join(pca_out |> 
                 mutate(across(location, as.character)),
               by = join_by(location)) |> 
+    left_join(pls_out |> 
+                mutate(across(location, as.character)),
+              by = join_by(location)) |>
     filter(!is.na(offset)) |>
     mutate(X_sc = X/10000,
            Y_sc = Y/10000) |> 
@@ -429,11 +448,17 @@ run_inlabru <- function(spp){
                                        prior.range = c(0.05, 0.05),
                                        prior.sigma = c(0.1, 0.1) )
   
-  pc_vars <- str_subset(names(pca_out)[-1], "^PC\\d")
+  pc_vars <- c(str_subset(names(pca_out)[-1], "^PC\\d"),str_subset(names(pls_out)[-1], "^PLS\\d"))
+  pca_vars <- c(str_subset(names(pca_out)[-1], "^PC\\d"))
+  pls_vars <- str_subset(names(pls_out)[-1], "^PLS\\d")
   spde_inc <- vector('list', length = length(pc_vars))
-  for(i in 1:length(pc_vars)) {assign(paste0("spde_", pc_vars[[i]]),inla.spde2.pcmatern(mesh1D2,
+  for(i in 1:length(pc_vars)) {
+    assign(paste0("spde_", pc_vars[[i]]),inla.spde2.pcmatern(mesh1D2,
                                                                 prior.range = c(0.25, 0.01), # 1% of range less than 0.01
-                                                                prior.sigma = c(0.25, 0.01) ) )}
+                                                                prior.sigma = c(0.25, 0.01) ) )
+    
+    
+    }
   
   
   # the_spde2 <- the_spde
@@ -457,7 +482,7 @@ run_inlabru <- function(spp){
     RL_cr <- "RecLength(RL, model = 'factor_contrast') +"
   }
   
-  comp_str <- 
+  comp_str_base <- 
   paste0("~ o(offset, model = 'const') +
     Intercept(1) + ",
     RL_cr,
@@ -465,21 +490,33 @@ run_inlabru <- function(spp){
     "kappa(site, model = 'iid', constr = TRUE, hyper = list(prec = pc_prec)) +
     doy(doy_r, model = the_spde_doy) +
     alpha(geometry, model = spde) +
-         "
-         ,
-        paste0("spat_cov_",pc_vars,"(",pc_vars, ", model = ", paste0("spde_", pc_vars),")", collapse = "+"))  
+         ")
+  
+  comp_str_pca <- 
+    paste0(comp_str_base,
+        paste0("spat_cov_",pca_vars,"(",pca_vars, ", model = ", 
+               paste0("spde_", pca_vars),")", collapse = "+"))  
                # 'linear')", collapse = "+")) |> 
         # , paste0("spde_", inc_vi),")", collapse = "+")) |> 
   #    
 
+  comp_str_pls <- 
+    paste0(comp_str_base,
+           paste0("spat_cov_",pls_vars,"(",pls_vars, ", model = ", 
+                  paste0("spde_", pls_vars),")", collapse = "+")) 
    
   if(length(included_factors)>0){
-    comp_str <- paste0(comp_str," + ",
+    comp_str_pca <- paste0(comp_str_pca," + ",
       paste0("factor_cov_",included_factors,"(",included_factors, ", model = 'factor_contrast'",")", collapse = "+") 
+    )
+    
+    comp_str_pls <- paste0(comp_str_pls," + ",
+                           paste0("factor_cov_",included_factors,"(",included_factors, ", model = 'factor_contrast'",")", collapse = "+") 
     )
   }
   
-  comp <- as.formula(comp_str)
+  comp_pca <- as.formula(comp_str_pca)
+  comp_pls <- as.formula(comp_str_pls)
   
   
   comp_simple <-   as.formula(paste0("~ o(offset, model = 'const') +
@@ -504,7 +541,8 @@ run_inlabru <- function(spp){
   # job::job({
   tictoc::tic()
   inla.setOption(inla.timeout = time_limit)
-  run_mod <- function(family_, comps_, ...){
+  run_mod <- function(name, family_, comps_, ...){
+    print(glue::glue("{name}", ))
     rlang::try_fetch({
     bru(
       comps_,
@@ -529,8 +567,10 @@ run_inlabru <- function(spp){
   
 
   res_tbl <- tribble(~name,~family_, ~comps_,
-                    "poisson", "poisson", list(comp),
-                    "zip", "zeroinflatedpoisson1", list(comp),
+                    "poisson_pca", "poisson", list(comp_pca),
+                    "poisson_pls", "poisson", list(comp_pls),
+                    "zip_pca", "zeroinflatedpoisson1", list(comp_pca),
+                    "zip_pls", "zeroinflatedpoisson1", list(comp_pls),
                     'poisson_sp',  "poisson", list(comp_simple),
                      "zip_sp", "zeroinflatedpoisson1", list(comp_simple)) #
   if(run_a2){
@@ -606,17 +646,17 @@ run_inlabru <- function(spp){
                           # "obs_prob = dpois(y, expect),",
                           "pobs = 1-dpois(0, expect))}") |> 
       as.formula()
-    
-    
-    f_pred <- 
-      paste0("~{",
-             "expect <- exp(",
-             comp_str |> str_remove_all("\\([^\\)]+\\)")  |> str_remove_all("\\n") |> 
-               str_remove_all("\\)") |> str_remove("~"), ")\n",
-             "list(
-        expect = expect,
-        obs_prob = dpois(y, expect))}") |> 
-      as.formula()
+    # 
+    # if(str_detect(waic_res$Model[[1]], "pca")
+    # f_pred <- 
+    #   paste0("~{",
+    #          "expect <- exp(",
+    #          comp_str |> str_remove_all("\\([^\\)]+\\)")  |> str_remove_all("\\n") |> 
+    #            str_remove_all("\\)") |> str_remove("~"), ")\n",
+    #          "list(
+    #     expect = expect,
+    #     obs_prob = dpois(y, expect))}") |> 
+    #   as.formula()
   
   
   x4pred_t2se <- expand_grid(      t2se_sc = seq(-1.,1., length.out = 100),

@@ -49,8 +49,11 @@ recordings <- test_training_data$train_recordings |>
     recording_id = as.numeric(recording_id)) #|> 
 
 rm(test_training_data, train_locs)
+counts_full <- read_rds(g("{rds_data_loc}/counts.rds")) 
+spp_list <- distinct(counts_full,species_name_clean, species_code ) |> 
+  filter(!is.na(species_code))
 
-counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+counts <- counts_full |>
   replace_na(list(collection="WildTrax")) |> 
   filter(event_id %in% recordings$event_id ) |> 
   filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |> 
@@ -61,6 +64,8 @@ counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
                     total_count_with_tmtt)) |> 
   filter(!is.na(y))
 
+rm(counts_full)
+
 qpad_offsets <- read_rds("output/QPAD_global_offsets.rds") |> 
   rename(max_dist =r, time_minutes = t)
 na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |> 
@@ -69,8 +74,9 @@ na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
 prep_brt_data <- function(spp){
   flush.console()
   
-  spp_name <- counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |> 
-    unique() 
+  spp_name <- spp_list$species_name_clean[spp_list$species_code==spp]
+    # counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |> 
+    # unique() 
   if(length(spp_name)!=1)rlang::abort("unable to identify species name")
   counts_spp <- filter(counts, species_name_clean == spp_name) |> 
     full_join(recordings |> dplyr::select(-geometry),
@@ -153,6 +159,12 @@ prep_brt_data <- function(spp){
   included_times <- setup_dat_0 |> filter(y>0) |> 
     janitor::tabyl(event_gr) |> 
     filter(n>0)
+  
+  if(nrow(included_times)==0) {
+    included_times <- setup_dat_0 |> #filter(y>0) |> 
+      janitor::tabyl(event_gr) |> 
+      filter(n>0 & !is.na(event_gr))
+  }
   
   
   setup_dat_nested <- 

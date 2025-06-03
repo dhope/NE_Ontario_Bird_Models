@@ -31,9 +31,15 @@ prep_predictions <- function(spp, save_objects){
   
   res <- read_rds(  g("{out_dir_tmp}/{spp}_inlabru_model.rds"))  
   fam <- res$.args$family
+  
+  
   pca_cov <- read_rds(g("{out_dir_tmp}/pca_cov.rds"))
   pca_prep <- read_rds(g("{out_dir_tmp}/pca_bundle.rds")) |> bundle::unbundle() |> 
     recipes::prep()
+  pls_prep <- read_rds(g("{out_dir_tmp}/pls_bundle.rds")) |> bundle::unbundle() |> 
+    recipes::prep()
+  
+  
 print(g("Preping predictions, {spp} --------------------------"))
 
 pred_date <- ifelse(run_a2, "2025-01-10", "2025-02-28")
@@ -48,19 +54,32 @@ pca_pred_data <- preds_r |>
   dplyr::select( any_of(names(pca_cov)) )
 pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) |> 
   dplyr::select(-location)
+
+pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) |> 
+  dplyr::select(-location)
+
 pc_vars <- str_subset(names(pca_preds), "^PC\\d")
+pls_vars <- str_subset(names(pls_preds), "^PLS\\d")
 
 list2env(read_rds(g("{out_dir_tmp}/sd_means.rds")), environment())
 if(!run_a2) t2se_mod <- read_rds(g("{out_dir_tmp}/t2se_mod.rds"))
 offsets_spp <- read_rds(g("{out_dir_tmp}/offsets_spp.rds"))
 
+f <- 
+res$bru_info$model$formula |> as.character() |>pluck(3) 
 
+if(str_detect(f,"_PLS")) {
+  p_vars <- pls_vars
+}else if(str_detect(f,"_PC")){
+  p_vars <- pc_vars
+} else{p_vars <- "project"} 
 
 
 scaled_prediction <- 
   preds_r |> 
   bind_cols(pca_preds) %>% 
-  dplyr::select(rn,which(names(. )%in% pc_vars)) |> 
+  bind_cols(pls_preds) %>%
+  dplyr::select(rn,which(names(. )%in% p_vars)) |> 
   pivot_longer(cols = -rn,
                names_to = 'variable', values_to = "x") |> 
   left_join(sd_mn,by = join_by(variable)) |> 
@@ -74,7 +93,7 @@ scaled_prediction <-
 preds_sc <- preds_r |>  mutate(X_sc = X/10000,
                                Y_sc = Y/10000) %>% 
   # bind_cols(pca_preds) %>% 
-  dplyr::select(X,Y,!which(names(. )%in% pc_vars)) |> #sd_mn$variable)) |> 
+  dplyr::select(X,Y,!which(names(. )%in% p_vars)) |> #sd_mn$variable)) |> 
   bind_cols(scaled_prediction |> dplyr::select(-rn)
   ) |> mutate(recording_id = factor("None")) |> 
   st_as_sf(coords = c("X", "Y"), crs = ont.proj)
@@ -108,27 +127,35 @@ n_splits <- 10
 pred_test <- 
   preds_sc |> 
   filter( !is.na(clc20_1_100)) |> 
-  dplyr::select(rn,all_of(pc_vars), X,Y, t2se_sc, event_gr,RL,offset,
+  dplyr::select(rn,all_of(p_vars), X,Y, t2se_sc, event_gr,RL,offset,
                 doy_r) %>%
   mutate(#chunk = cut_interval(rn, n=n_splits),
          rn_test = row_number())
 
+# r <- tidyterra::as_spatraster(bind_cols(xy,preds_sc |> 
+#                                           dplyr::select(rn,all_of(p_vars), X,Y, t2se_sc, event_gr,RL,offset,
+#                                                                      doy_r)), xycols = 1:2)
+# 
+# rr <- preds_sc |> 
+#   dplyr::select(rn,all_of(p_vars), X,Y, t2se_sc, event_gr,RL,offset,
+#                 doy_r) |> rasterize(y = r_pred)
 
+# if(p_vars == "project") p_vars <- n
 ff <- paste0("~ Intercept + ",
-             paste0("spat_cov_",pc_vars, collapse = "+"),
+             paste0("spat_cov_",p_vars, collapse = "+"),
              "+ alpha") |> 
   as.formula()
 
 ff_sp <- ~ Intercept +  alpha
 ff_g <- glue::glue('{res$misc$configs$contents$tag[-c(1,2)] |> glue::glue_collapse(sep = " + ")}')
 
-if(run_a2 | str_detect(ff_g,"PC01", negate = T)){
+if(run_a2 | str_detect(ff_g,"PC01|PLS01", negate = T)){
   ff_counts <- paste0("Intercept +  o + t2se + doy +",
-                      paste0("spat_cov_",pc_vars, collapse = "+"),
+                      paste0("spat_cov_",p_vars, collapse = "+"),
                       "+ alpha") #|>
 } else{
 ff_counts <- paste0("Intercept + RecLength + o + t2se + time_group + doy +",
-                    paste0("spat_cov_",pc_vars, collapse = "+"),
+                    paste0("spat_cov_",p_vars, collapse = "+"),
                     "+ alpha") #|>
 }
 
@@ -203,10 +230,10 @@ run_predictions <- function(spp){
   if(file.exists(out_rds_file)) return(NULL)
   dir.create(out_dir_tmp_preds, recursive = T)
   list2env(prep_predictions(spp, save_objects = FALSE), environment())
-nsamp <- 200
+nsamp <- 500
 print(g("Running predictions, {spp} --------------------------"))
-if(str_detect(ff_g, "PC01")){
-  tic()
+if(str_detect(ff_g, "PC01|PLS01")){
+  tic(g("Running predictions, {spp} --------------------------"))
 preds <- inlabru::generate(res, pred_test,
                   switch (fam,
                     'poisson' = ff_complex,
@@ -255,22 +282,26 @@ tictoc::toc()
 
 preds <- read_rds( g("{out_dir_tmp_preds}/{spp}_predictions_full.rds"))
 
+preds_t <- preds |> 
+  transpose()
+if("expect" %in% names(preds_t)){
+pres_counts <- preds_t |>
+  pluck("expect") %>% do.call("cbind", .)
 
-pres_counts <-preds |> # map(1:n_splits,
-                   # ~{pred_split[[.x]] |> 
-  # list_flatten(pred_split) |>
-  transpose() |>
-  pluck(1) %>% do.call("cbind", .)
+p_obs_str <- "pobs"
                    # }) %>% do.call("rbind", .)
+} else{p_obs_str <- "pobs_sp"}
 
+pres_counts_sp <- preds_t |>
+  pluck("expect_sp") %>% do.call("cbind", .)
 
 cat(glue::glue("{spp}---------------------\n"))
 pres_obs <-
-preds |> 
-                    transpose() |>
-                    pluck(2) %>% do.call("cbind", .)
+  preds_t |>
+                    pluck(p_obs_str) %>% do.call("cbind", .)
 tictoc::toc()
 
+rm(preds_t)
 
 pred_date <- ifelse(run_a2, "2025-01-10", "2025-02-28")
 
@@ -284,20 +315,33 @@ pred_test <-
   filter( !is.na(clc20_1_100))
 
 
-pred_test$mean_count <- apply((pres_counts), 1, mean)
+# prob obs -----
 pred_test$p_obs <- apply((pres_obs), 1, mean)
-# pred_test$mean_estimate[pred_test$mean_estimate>quantile(pred_test$mean_estimate, probs = 0.99)] <- NA
-pred_test$median_count <- apply(pres_counts, 1, median)
-# pred_test$median_sp <- apply(pred_sp, 1, median)
-pred_test$sd_count <- apply(pres_counts, 1, sd)
+pred_test[, c("lci_p", "uci_p")] <-matrixStats::rowQuantiles(pres_obs, probs=c(.025, .975)) #apply(modpred, 1, sd)
+
+# SP ------
+pred_test$median_sp <- apply(pres_counts_sp, 1, median)
+pred_test$mean_sp <- apply(pres_counts_sp, 1, mean)
+pred_test$sd_sp <- apply(pres_counts_sp, 1, sd)
+pred_test[, c("lci_count_sp", "uci_count_sp")] <-matrixStats::rowQuantiles(pres_counts_sp, probs=c(.025, .975)) #apply(modpred, 1, sd)
 # preds_sc$spatial_mean[!is.na(preds_sc$fnlc_10_500)] <- apply(modpred_xy, 1, mean)
 # preds_sc$spatial_sd[!is.na(preds_sc$fnlc_10_500)] <- apply(modpred_xy, 1, sd)
 # preds_sc$sd[!is.na(preds_sc$fnlc_10_500)] <-matrixStats::rowSds(x = M_predictions) #apply(modpred, 1, sd)
-pred_test[, c("lci_count", "uci_count")] <-matrixStats::rowQuantiles(pres_counts, probs=c(.025, .975)) #apply(modpred, 1, sd)
-pred_test[, c("lci_p", "uci_p")] <-matrixStats::rowQuantiles(pres_obs, probs=c(.025, .975)) #apply(modpred, 1, sd)
+# pred_test$mean_estimate[pred_test$mean_estimate>quantile(pred_test$mean_estimate, probs = 0.99)] <- NA
+
+
+# Counts ------
+if(exists("pres_counts")) {
+pred_test$mean_count <- apply((pres_counts), 1, mean)
+pred_test$median_count <- apply(pres_counts, 1, median)
+pred_test$sd_count <- apply(pres_counts, 1, sd)
+
+pred_test[, c("lci_count", "uci_count")] <- matrixStats::rowQuantiles(pres_counts, probs=c(.025, .975)) #apply(modpred, 1, sd)
+
 # pred_test[, c("lci_sp", "uci_sp")] <-matrixStats::rowQuantiles(pred_sp, probs=c(.025, .975)) #apply(modpred, 1, sd)
 pred_test$ci_size_count <- pred_test$uci_count - pred_test$lci_count
 
+}
 
 # preds_sc$mean_estimate[!is.na(preds_sc$fnlc_10_500)] <-matrixStats::rowMeans2(M_predictions)# apply(modpred, 1, mean)
 # preds_sc$simulation[!is.na(preds_sc$fnlc_10_500)] <- apply(simulated_density, 1, median)
@@ -309,28 +353,34 @@ pred_test$ci_size_count <- pred_test$uci_count - pred_test$lci_count
 preds_sc <- left_join(preds_r |> select(rn),
                       pred_test |> 
                         st_drop_geometry() |> 
-                        dplyr::select(rn,
-                                      mean_count,
-                                      p_obs,
-                                      median_count,
-                                      # median_sp,
-                                      sd_count,
-                                      lci_count,
-                                      uci_count,
-                                      lci_p,
-                                      uci_p,
-                                      # lci_sp,
-                                      # uci_sp,
-                                      ci_size_count),
-                      by = join_by(rn)
-)
-
-preds_sc <- preds_sc |> 
-  mutate(
+                        dplyr::select(rn,tidyselect::any_of(c(
+                                      "mean_count",
+                                      "p_obs",
+                                      "median_count",
+                                      "median_sp",
+                                      "mean_sp",
+                                      "sd_sp",
+                                      "sd_count",
+                                      "lci_count",
+                                      "uci_count",
+                                      "lci_p",
+                                      "uci_p",
+                                      "lci_count_sp",
+                                      "uci_count_sp",
+                                      "ci_size_count"))),
+                      by = join_by(rn) ) %>%
+  {if(exists("pres_counts")){
+  mutate(.,
     cv_count = sd_count/mean_count,
-    # cv_spatial = spatial_mean / spatial_sd,
     k_cv = sqrt(cv_count^2/(1+cv_count^2)) 
-  )
+  ) } else{.} } %>% {
+  if(exists("pres_counts_sp")){
+    mutate(.,
+    cv_spatial = mean_sp / sd_sp,
+    k_cv_sp = sqrt(cv_spatial^2/(1+cv_spatial^2)) ) 
+  } else{.} }
+
+
 # k_cv_spatial = sqrt(cv_spatial^2/(1+cv_spatial^2)))#,
 # est_mod = ifelse(est>=log(0.25), log(0.25), est))
 
@@ -343,66 +393,82 @@ r_temp <- rast(r_pred[[g("{pred_date}_prediction_rasters_1")]])
 in_mesh <- fmesher::fm_is_within(st_as_sf(xy, coords = c("x", "y"), crs= 3161), mesh_inla)
 
 r2 <- terra::cellFromXY(r_temp,xy[in_mesh,])
-median_count <- #median_sp <- 
-  sd_r <- lci_r <- lci_p <- #lci_sp <- uci_sp <- 
-  uci_p<- uci_r <- mean_estimate <- 
-  p_obs <- cv_r <-  k_cv <-  ci_size_r <- r_temp
+# median_count <- #median_sp <- 
+#   sd_r <- lci_r <- lci_p <- #lci_sp <- uci_sp <- 
+#   uci_p<- uci_r <- mean_estimate <- 
+#   p_obs <- cv_r <-  k_cv <-  ci_size_r <- r_temp
+names_outstack <- names(preds_sc)[-1]
+for(i in 1:length(names_outstack)){
+  j <- names_outstack[[i]]
+  # assign(i, r_temp)
+  print(j)
+  tt <- r_temp
+  tt[r2] <- preds_sc[[j]][in_mesh]
+  
+  if(i == 1){
+    outstack <- tt
+  } else{add(outstack) <- tt}
+  names(outstack)[[i]] <- j
+  varnames(outstack)[[i]] <- j
+  # assign(i, tt)
+  
+  rm(tt)
+}
 
 
-
-sd_r[r2] <- preds_sc$sd_count[in_mesh]
-lci_r[r2] <- preds_sc$lci_count[in_mesh]
-lci_p[r2] <- preds_sc$lci_p[in_mesh]
-# lci_sp[r2] <- preds_sc$lci_sp[in_mesh]
-# uci_sp[r2] <- preds_sc$uci_sp[in_mesh]
-uci_r[r2] <- preds_sc$uci_count[in_mesh]
-uci_p[r2] <- preds_sc$uci_p[in_mesh]
-mean_estimate[r2] <- preds_sc$mean_count[in_mesh]
-median_count[r2] <- preds_sc$median_count[in_mesh]
-# median_sp[r2] <- preds_sc$median_sp[in_mesh]
-p_obs[r2] <- preds_sc$p_obs[in_mesh]
-ci_size_r[r2] <- preds_sc$ci_size_count[in_mesh]
-cv_r[r2] <- preds_sc$cv_count[in_mesh]
-# cv_spatial[r2] <- preds_sc$cv_spatial
-k_cv[r2] <- preds_sc$k_cv[in_mesh]
-# k_cv_spatial[r2] <- preds_sc$k_cv_spatial
-
+# sd_r[r2] <- preds_sc$sd_count[in_mesh]
+# lci_r[r2] <- preds_sc$lci_count[in_mesh]
+# lci_p[r2] <- preds_sc$lci_p[in_mesh]
+# # lci_sp[r2] <- preds_sc$lci_sp[in_mesh]
+# # uci_sp[r2] <- preds_sc$uci_sp[in_mesh]
+# uci_r[r2] <- preds_sc$uci_count[in_mesh]
+# uci_p[r2] <- preds_sc$uci_p[in_mesh]
+# mean_estimate[r2] <- preds_sc$mean_count[in_mesh]
+# median_count[r2] <- preds_sc$median_count[in_mesh]
+# # median_sp[r2] <- preds_sc$median_sp[in_mesh]
+# p_obs[r2] <- preds_sc$p_obs[in_mesh]
+# ci_size_r[r2] <- preds_sc$ci_size_count[in_mesh]
+# cv_r[r2] <- preds_sc$cv_count[in_mesh]
+# # cv_spatial[r2] <- preds_sc$cv_spatial
+# k_cv[r2] <- preds_sc$k_cv[in_mesh]
+# # k_cv_spatial[r2] <- preds_sc$k_cv_spatial
 
 
-outstack <- c(sd_r,
-              lci_r,lci_p,
-              # uci_sp,lci_sp,
-              uci_r,uci_p,
-              ci_size_r,
-              mean_estimate,
-              median_count,
-              # median_sp,
-              p_obs,
-              cv_r,
-              # cv_spatial,
-              k_cv)
-names(outstack) <- varnames(outstack) <- c(
-  "sd_count", "lci_count", "lci_p",
-  # "uci_sp", "lci_sp",
-  "uci_count", "uci_p",
-  "ci_size_count",
-  "mean_count","median_count",
-  # "median_sp",
-  "p_obs",
-  "cv_count", #"cv_spatial_only", 
-  "k_cv")
+# 
+# outstack <- c(sd_r,
+#               lci_r,lci_p,
+#               # uci_sp,lci_sp,
+#               uci_r,uci_p,
+#               ci_size_r,
+#               mean_estimate,
+#               median_count,
+#               # median_sp,
+#               p_obs,
+#               cv_r,
+#               # cv_spatial,
+#               k_cv)
+# names(outstack) <- varnames(outstack) <- c(
+#   "sd_count", "lci_count", "lci_p",
+#   # "uci_sp", "lci_sp",
+#   "uci_count", "uci_p",
+#   "ci_size_count",
+#   "mean_count","median_count",
+#   # "median_sp",
+#   "p_obs",
+#   "cv_count", #"cv_spatial_only", 
+#   "k_cv")
 
 
 # terra::writeCDF(outstack, filename = glue::glue("{out_dir_spatial}/Predictions_{spp}.nc"),overwrite=T, split=T)
 
 
-for (i in  names(outstack)){
+for (i in  names_outstack){
   terra::writeRaster(outstack[[i]], glue::glue("{out_dir_spatial}/{i}_{spp}.tif"),overwrite=T)
 }
 
 
-expectations <- str_subset(names(outstack),"mean|median|p_obs")
-errors <- str_subset(names(outstack),"mean|median|p_obs", negate = T)
+expectations <- str_subset(names_outstack,"mean|median|p_obs")
+errors <- str_subset(names_outstack,"mean|median|p_obs", negate = T)
 napken_lake <- read_sf(
   nl_loc
 ) |> st_transform(ont.proj)

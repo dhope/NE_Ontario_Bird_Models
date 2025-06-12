@@ -537,14 +537,17 @@ run_inlabru <- function(spp){
   library(inlabru)
   flush.console()
   # bru_options_set(control.compute = list(cpo = TRUE))
-  inla.setOption(num.threads = 32)
+  
+  future::plan(future::multisession, workers = 32)
+  inla.setOption(num.threads = "32")
   # job::job({
-  tictoc::tic()
+  
   inla.setOption(inla.timeout = time_limit)
   run_mod <- function(name, family_, comps_, ...){
-    print(glue::glue("{name}", ))
+    print(glue::glue("{spp} -- {name}", ))
+    tictoc::tic()
     rlang::try_fetch({
-    bru(
+    b <- bru(
       comps_,
       bru_obs(
         formula,
@@ -558,11 +561,15 @@ run_inlabru <- function(spp){
           strategy = "adaptive"
         ),
         verbose = F
-      ) )  
+      ) )
+      tictoc::toc()
+      b
     }, 
     error = function(cnd){
+      tictoc::toc()
       NULL
     })
+    
   }
   
 
@@ -581,7 +588,7 @@ run_inlabru <- function(spp){
   
   res_map <- pmap(res_tbl, run_mod) 
   names(res_map) <- res_tbl$name
-  
+  future::plan(future::sequential)
   
   
   get_waic <- function(mod_list, mod_names, criterion = "WAIC"){

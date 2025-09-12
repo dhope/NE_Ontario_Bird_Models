@@ -54,3 +54,6 @@ R/__paths.R
 
 # output folder
 output/
+
+# Model_Outputs book
+Model_Outputs/

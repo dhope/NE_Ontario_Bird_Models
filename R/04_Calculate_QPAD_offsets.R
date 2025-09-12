@@ -1,6 +1,6 @@
 source("R/__globals.R")
 library(QPAD)
-
+load_BAM_QPAD(version = 3)
 
 QPAD_globals <- 
 expand_grid(species =QPAD::getBAMspecieslist(), r = c(0.5, 1, Inf), t = dur) |> # dur from NAPOPS_QPAD

@@ -1,4 +1,4 @@
-source("R/1999_INLA_SPDE.R")
+source("R/08_INLA_SPDE.R")
 
 
 test_training_data <- read_rds(g("output/{date_compiled}_test_training_data.rds"))
@@ -51,7 +51,7 @@ counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
 
 
 inla_tests <- function(spp){
-  
+  tictoc::tic(g('{spp}'))
   out_dir_spatial <- g(
     "{INLA_output_loc_spatial}/{out_dir_app}/{spp}"
   )
@@ -77,6 +77,9 @@ inla_tests <- function(spp){
   pca_cov <- read_rds(g("{out_dir_tmp}/pca_cov.rds"))
   pca_prep <- read_rds(g("{out_dir_tmp}/pca_bundle.rds")) |> bundle::unbundle() |> 
     recipes::prep()
+  pls_prep <- read_rds(g("{out_dir_tmp}/pls_bundle.rds")) |> bundle::unbundle() |> 
+    recipes::prep()
+  
   
   pca_cov_test <- (spatial_cov) |> 
     filter(location %in% setup_dat$location) |> 
@@ -88,31 +91,49 @@ inla_tests <- function(spp){
   pca_pred_data <- pca_cov_test |> 
     # mutate(location = glue::glue("loc-{1:nrow(pca_cov_test)}")) |>
     dplyr::select( any_of(names(pca_cov)) )
-  pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) #|> 
+  
+  pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) #|>
+  pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) |> 
+    dplyr::select(-location)
+  
+  
     # dplyr::select(-location)
   pc_vars <- str_subset(names(pca_preds), "^PC\\d")
+  pls_vars <- str_subset(names(pls_preds), "^PLS\\d")
   
   list2env(read_rds(g("{out_dir_tmp}/sd_means.rds")), environment())
+  t2se_sd_mn <- filter(t2se_sd_mn,!is.na(event_gr))
   t2se_mod <- read_rds(g("{out_dir_tmp}/t2se_mod.rds"))
   offsets_spp <- read_rds(g("{out_dir_tmp}/offsets_spp.rds"))
   
+  ff_g <- glue::glue('{res$misc$configs$contents$tag[-c(1,2)] |> glue::glue_collapse(sep = " + ")}')
+  # ff_g <- glue::glue('{res$misc$configs$contents$tag[-c(1,2)] |>
+  #  str_subset("kappa", negate = T) |> 
+  #                    glue::glue_collapse(sep = " + ")}')
+  
   
   # sum(!is.na(pca_preds))
+  if(str_detect(ff_g,"_PLS")) {
+    p_vars <- pls_vars
+  }else if(str_detect(ff_g,"_PC")){
+    p_vars <- pc_vars
+  } else{p_vars <- "project"} 
+  
   
   
   scaled_prediction <- 
     setup_dat |> 
-    left_join(pca_preds,
+    left_join(pca_preds |> bind_cols(pls_preds),
               by = join_by(location)) %>% 
     dplyr::select( location, doy,Rec_length,test_group,
                    event_gr,t2se,site_id_agg = site_id_agg.x,
                    X, Y,offset,
-                  which(names(. )%in% pc_vars)) %>%
+                  which(names(. )%in% p_vars)) %>%
     bind_cols(sd_mn |> 
                 filter(variable %in% names(.) & variable !="t2se") |> 
                 pivot_wider(names_from = variable,
                             values_from = c(sd2, mn))) |> 
-    mutate(across(c(doy, starts_with("PC")),
+    mutate(across(c(doy, starts_with("PC|PLS")),
            ~{(.x - get(glue::glue("mn_{cur_column()}")) )/
                 get(glue::glue("sd2_{cur_column()}") )}
            ) ) |> 
@@ -127,7 +148,8 @@ inla_tests <- function(spp){
            Y_sc = Y/10000,
            RL = Rec_length,
            y = setup_dat$y,
-           site = factor(site_id_agg)) 
+           site = factor(site_id_agg)) |> 
+    filter(event_gr %in% t2se_sd_mn$event_gr) 
     
     
     
@@ -146,17 +168,17 @@ inla_tests <- function(spp){
   
   
   
+
   
   
-  
-  
-  ff_g <- glue::glue('{res$misc$configs$contents$tag[-c(1,2)] |> glue::glue_collapse(sep = " + ")}')
+ 
   
   ff <- as.formula(
     paste0("~o + ", ff_g)
   )
   # nsamp <- 500
   gen_inla_test <- function(test_group_){
+    tictoc:::tic(test_group_)
     if(test_group_=="Train"){
       d_test <- df_org |> 
         mutate(rn = as.character(row_number()),
@@ -165,11 +187,13 @@ inla_tests <- function(spp){
   d_test <- scaled_prediction[scaled_prediction$test_group==test_group_,] |> 
     mutate(rn = as.character(row_number()))
     }
+    
+    
   if(fam!="zeroinflatedpoisson1"){
   preds <- inlabru::generate(res, newdata=d_test,formula = ff,
                              num.threads =32,
-                             n.samples = nsamp)# %>% exp() 
-  d_pois <- map(1:nrow(d_test),~{dpois(d_test$y[[.x]], exp(preds[.x,]) 
+                             n.samples = nsamp) %>% exp() 
+  d_pois <- map(1:nrow(d_test),~{dpois(d_test$y[[.x]], (preds[.x,]) 
   )}) %>%
     do.call(rbind, .)
   
@@ -177,23 +201,18 @@ inla_tests <- function(spp){
   # p_zero <- dpois(0,exp(preds))
   
   preds_out <- 
-    list(expect = exp(preds),
-         prob_zero = dpois(0,exp(preds)),
+    list(expect = (preds),
+         prob_zero = dpois(0,(preds)),
          obs_prob = d_pois
          )
   
-  
   } else{
-    if(str_detect(ff_g,"PC01")){
+    # if(str_detect(ff_g,"PC01|PLS01")){
     preds <- inlabru::generate(res, newdata=d_test,
-                ~{
+                as.formula(paste0("~{
                   scaling_prob <- (1 - zero_probability_parameter_for_zero_inflated_poisson_1)
-                  lambda <- exp(
-                    RecLength + t2se + time_group + kappa + doy + alpha +
-                      spat_cov_PC01 + spat_cov_PC02 + spat_cov_PC03 +
-                      spat_cov_PC04 + spat_cov_PC05 + spat_cov_PC06 +
-                      spat_cov_PC07 + spat_cov_PC08 + spat_cov_PC09 +
-                      spat_cov_PC10 + Intercept
+                  lambda <- exp(",
+                    ff_g,"
                   ) 
                   expect_param <- lambda * exp(o)
                   expect <- scaling_prob * expect_param
@@ -208,34 +227,34 @@ inla_tests <- function(spp){
                     prob_zero = (1 - scaling_prob) * (y == 0) +
                       scaling_prob * dpois(0, expect_param)
                   )
-                  },
+                  }")),
               num.threads =32,
               n.samples = nsamp)# %>% exp()
-    } else{
-      preds <- inlabru::generate(res, newdata=d_test,
-                                 ~{
-                                   scaling_prob <- (1 - zero_probability_parameter_for_zero_inflated_poisson_1)
-                                   lambda <- exp(
-                                     RecLength + t2se + time_group + kappa + doy + alpha +
-                                      Intercept
-                                   ) 
-                                   expect_param <- lambda * exp(o)
-                                   expect <- scaling_prob * expect_param
-                                   variance <- scaling_prob * expect_param *
-                                     (1 + (1 - scaling_prob) * expect_param)
-                                   list(
-                                     lambda = lambda,
-                                     expect = expect,
-                                     variance = variance,
-                                     obs_prob = (1 - scaling_prob) * (y == 0) +
-                                       scaling_prob * dpois(y, expect_param),
-                                     prob_zero = (1 - scaling_prob) * (y == 0) +
-                                       scaling_prob * dpois(0, expect_param)
-                                   )
-                                 },
-                                 num.threads =32,
-                                 n.samples = nsamp)# %>% exp()
-    }
+    # } else{
+    #   preds <- inlabru::generate(res, newdata=d_test,
+    #                              ~{
+    #                                scaling_prob <- (1 - zero_probability_parameter_for_zero_inflated_poisson_1)
+    #                                lambda <- exp(
+    #                                  RecLength + t2se + time_group + kappa + doy + alpha +
+    #                                   Intercept
+    #                                ) 
+    #                                expect_param <- lambda * exp(o)
+    #                                expect <- scaling_prob * expect_param
+    #                                variance <- scaling_prob * expect_param *
+    #                                  (1 + (1 - scaling_prob) * expect_param)
+    #                                list(
+    #                                  lambda = lambda,
+    #                                  expect = expect,
+    #                                  variance = variance,
+    #                                  obs_prob = (1 - scaling_prob) * (y == 0) +
+    #                                    scaling_prob * dpois(y, expect_param),
+    #                                  prob_zero = (1 - scaling_prob) * (y == 0) +
+    #                                    scaling_prob * dpois(0, expect_param)
+    #                                )
+    #                              },
+    #                              num.threads =32,
+    #                              n.samples = nsamp)# %>% exp()
+    # }
     
     pt <- preds |> transpose()
     preds_out <- map(pt, ~do.call(cbind, .x))
@@ -249,23 +268,32 @@ inla_tests <- function(spp){
   
   
   
-  values <- preds_out$expect |>   as_tibble() |>
-    rowwise() |> 
-    transmute(median = median(c_across(everything())),
-              mean = mean(c_across(everything())),
-              sd = sd(c_across(everything())),
-              pred_var = mean + sd**2,
-              var = var(c_across(everything())),
-              lci = quantile(c_across(everything()),probs=c(.025)),
-              uci = quantile(c_across(everything()),probs=c(.975))
-             
-              
-              
-              ) |> 
-    ungroup() |> 
-    mutate( log_score = test_log_scores)
+  # values <- preds_out$expect |>   as_tibble() |>
+  #   rowwise() |> 
+  #   transmute(median = median(c_across(everything())),
+  #             mean = mean(c_across(everything())),
+  #             sd = sd(c_across(everything())),
+  #             pred_var = mean + sd**2,
+  #             var = var(c_across(everything())),
+  #             lci = quantile(c_across(everything()),probs=c(.025)),
+  #             uci = quantile(c_across(everything()),probs=c(.975))
+  #            
+  #             
+  #             
+  #             ) |> 
+  #   ungroup() |> 
+  #   mutate( log_score = test_log_scores)
   
-  
+  values <- tibble(
+    median = matrixStats::rowMedians(preds_out$expect),
+    mean =  matrixStats::rowMeans2(preds_out$expect),
+    sd =  matrixStats::rowSds(preds_out$expect),
+    var =  matrixStats::rowVars(preds_out$expect)) |> 
+    mutate(pred_var = mean + sd **2,
+           log_score = test_log_scores)
+    values[,c("lci", "uci")] <- 
+      matrixStats::rowQuantiles(preds_out$expect,
+                                probs=c(.025, 0.975))
   
   
   # ecdf(exp(preds[1,]))(seq(0,10, by = 0.1)) |> plot()
@@ -287,8 +315,11 @@ inla_tests <- function(spp){
   })
   
   
-  
+  if(sum(d_test$y) ==0) {any_observations <- FALSE}else{
+    any_observations <- TRUE
+  }
  
+  if(any_observations){
   med_roc_curve <- 
     pz_long |> ungroup() |> 
     summarise(dpois_obs=median(dpois_obs), obs_yn=unique(obs_yn),
@@ -313,7 +344,7 @@ inla_tests <- function(spp){
     coord_equal() +
     theme_light() +
     labs(x = "False positive rate", y = "True positive rate",
-         title = glue::glue("{spp} - {test_group_} "))
+         title = glue::glue("{spp} - {test_group_} "))} else{test_roc_curve <- NULL}
   
 
   test_preds <- bind_cols(d_test, values) |> 
@@ -400,13 +431,22 @@ inla_tests <- function(spp){
     ) |> mutate(AE = abs(expect-y)) 
   })
   
-  test_glm <- lme4::lmer(expect~(y|iter), data = test_full_expect)
-  
-  test_lmer_ref <- lme4::ranef(test_glm) |> as_tibble() |>
-    mutate(iter = as.numeric(as.character(grp))) |> arrange(iter) |>
-    select(iter, term, condval) |> 
-    pivot_wider(names_from = term, 
-                values_from = condval, id_cols = iter)
+  # test_glm <- lme4::lmer(expect~(y|iter), data = test_full_expect)
+  # test_glm <- rlang::try_fetch({glmmTMB::glmmTMB(expect~(y|iter), data = test_full_expect)},
+  #                              error = function(x) return(NULL))
+  #   
+  # if(!is.null(test_glm)){
+  # 
+  #   test_lmer_ref <- glmmTMB::ranef(test_glm) |> as_tibble() |>
+  #   mutate(iter = as.numeric(as.character(grp))) |> arrange(iter) |>
+  #   select(iter, term, condval) |> 
+  #   pivot_wider(names_from = term, 
+  #               values_from = condval, id_cols = iter)
+  #   
+  # } else{
+  #   test_lmer_ref <- NULL
+  # }
+    
   
   metrics_iter <- 
   test_full_expect |> 
@@ -428,21 +468,21 @@ inla_tests <- function(spp){
                 deviance = 2* sum(ifelse( y == 0, 0, ( y * log( y/expect))) -
                                     ( y - expect)),
                 mean_residual = mean(abs(expect)), .by = iter) |> 
-    rowwise() |> 
-    mutate(
-                discrim_intercept = test_lmer_ref$`(Intercept)`[test_lmer_ref$iter==iter],
-                discrim_slope = test_lmer_ref$y[test_lmer_ref$iter==iter],
-               
-                
-                
-    ) |> 
+    # rowwise() |> 
+    # mutate(
+    #             discrim_intercept = test_lmer_ref$`(Intercept)`[test_lmer_ref$iter==iter],
+    #             discrim_slope = test_lmer_ref$y[test_lmer_ref$iter==iter],
+    #            
+    #             
+    #             
+    # ) |> 
     left_join(
       bind_rows(metrics_iter, auc_iter) |> 
         pivot_wider(names_from = .metric, values_from = .estimate, id_cols = iter)
       , by = "iter") |>  
     mutate(species = spp, test =test_group_) 
   
-  
+  tictoc::toc()
   
   list(plot_roc_curve = test_roc_curve,
        plot_PIT = p2,
@@ -457,7 +497,8 @@ inla_tests <- function(spp){
   
 }
   xxx <- c("Train","Spatial", "Site")
-  all_tests <- map(xxx,gen_inla_test )
+  # mirai::daemons(3)
+  all_tests <- map(xxx,gen_inla_test)#,  .parallel = TRUE )
   names(all_tests) <- xxx
   
   t_test <- transpose(all_tests)
@@ -490,33 +531,39 @@ inla_tests <- function(spp){
    write_csv(iter_metrics_all,g("{out_dir}/iter_metrics_{spp}.csv") )
    write_rds(iter_metrics_all,g("{out_dir_tmp}/iter_metrics_{spp}.rds") )
 
-  
+  tictoc::toc()
 }
 
+# mirai::daemons(10)
+# 
+# crated_f <- carrier::crate(~inla_tests(.x))
 
-
+spp_modeled <- 
 list.files(INLA_output_loc_TMP, "_inlabru_model.rds", recursive = T) |> 
- stringr::str_extract("\\w{4}") |> unique() %>% .[-(1:4)] |> 
+ stringr::str_extract("\\w{4}") |> unique() ## |> 
   # str_subset("ATSP", negate = T) |> 
   
-  map(~{print(.x); inla_tests(.x)})
+spp_comp <- 
+  list.files(INLA_output_loc, "iter_metrics_", recursive = T) |> 
+  stringr::str_extract("\\w{4}") |> unique()
 
 
+m <- walk(spp_modeled[!spp_modeled %in% spp_comp], inla_tests)
 
 
-library(tidyverse)
-
-all_spp_mat <- 
-list.files(INLA_output_loc, pattern = "median_metrics", recursive = T, full.names = T) |> 
-  read_csv()
-
-ggplot(all_spp_mat,
-       aes( factor(test, levels = c("Train", "Site", "Spatial")),roc_auc,
-           group = species)) +
-  geom_line() +
-  ggrepel::geom_label_repel(data = filter(all_spp_mat, test == "Spatial"),
-                            aes(label = species))
-  scale_colour_viridis_d()
+# library(tidyverse)
+# 
+# all_spp_mat <- 
+# list.files(INLA_output_loc, pattern = "median_metrics", recursive = T, full.names = T) |> 
+#   read_csv()
+# 
+# ggplot(all_spp_mat,
+#        aes( factor(test, levels = c("Train", "Site", "Spatial")),roc_auc,
+#            group = species)) +
+#   geom_line() +
+#   ggrepel::geom_label_repel(data = filter(all_spp_mat, test == "Spatial"),
+#                             aes(label = species))
+#   scale_colour_viridis_d()
 
 
 

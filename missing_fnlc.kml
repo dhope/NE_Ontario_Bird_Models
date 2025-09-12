@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document id="root_doc">
+<Folder><name>missing_fnlc</name>
+  <Placemark id="missing_fnlc.1">
+      <Point><coordinates>-82.94035,55.2516</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.2">
+      <Point><coordinates>-82.714313,49.268336</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.3">
+      <Point><coordinates>-82.734681,49.245749</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.4">
+      <Point><coordinates>-82.801514,49.191984</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.5">
+      <Point><coordinates>-82.569431,49.331705</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.6">
+      <Point><coordinates>-82.348081,49.337293</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.7">
+      <Point><coordinates>-82.520309,49.364203</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.8">
+      <Point><coordinates>-82.738294,49.223321</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.9">
+      <Point><coordinates>-82.751092,49.230244</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.10">
+      <Point><coordinates>-82.496014,48.960984</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.11">
+      <Point><coordinates>-82.499791,48.962114</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.12">
+      <Point><coordinates>-82.726009,49.217209</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.13">
+      <Point><coordinates>-82.493837,48.965393</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.14">
+      <Point><coordinates>-82.47662,48.976437</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.15">
+      <Point><coordinates>-82.456909,49.010513</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.16">
+      <Point><coordinates>-82.717073,49.20939</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.17">
+      <Point><coordinates>-82.73525,49.276362</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.18">
+      <Point><coordinates>-82.751287,49.238859</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.19">
+      <Point><coordinates>-82.49901,48.959299</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.20">
+      <Point><coordinates>-82.721482,49.213012</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.21">
+      <Point><coordinates>-82.487409,48.969327</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.22">
+      <Point><coordinates>-82.4100035000001,48.95588</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.23">
+      <Point><coordinates>-82.4100035000001,48.95588</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.24">
+      <Point><coordinates>-82.773102,49.229215</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.25">
+      <Point><coordinates>-82.773102,49.229215</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.26">
+      <Point><coordinates>-82.369305,48.975602</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.27">
+      <Point><coordinates>-82.773296,49.226963</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.28">
+      <Point><coordinates>-82.773296,49.226963</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.29">
+      <Point><coordinates>-82.7723755,49.2257095000001</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.30">
+      <Point><coordinates>-82.7723755,49.2257095000001</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.31">
+      <Point><coordinates>-82.769807,49.229266</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.32">
+      <Point><coordinates>-82.769807,49.229266</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.33">
+      <Point><coordinates>-82.767177,49.2305945</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.34">
+      <Point><coordinates>-82.767177,49.2305945</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.35">
+      <Point><coordinates>-82.689086,49.242709</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.36">
+      <Point><coordinates>-82.689086,49.242709</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.37">
+      <Point><coordinates>-82.775737,49.2215725</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.38">
+      <Point><coordinates>-82.775737,49.2215725</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.39">
+      <Point><coordinates>-82.748712,49.27059</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.40">
+      <Point><coordinates>-82.403599,49.007972</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.41">
+      <Point><coordinates>-82.741016,49.270275</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.42">
+      <Point><coordinates>-82.728305,49.252321</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.43">
+      <Point><coordinates>-82.4116260000001,48.9606195</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.44">
+      <Point><coordinates>-82.4116260000001,48.9606195</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.45">
+      <Point><coordinates>-82.406648,48.986596</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.46">
+      <Point><coordinates>-82.403597,48.998148</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.47">
+      <Point><coordinates>-82.724983,49.256365</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.48">
+      <Point><coordinates>-82.737432,49.24532</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.49">
+      <Point><coordinates>-82.413736,48.968472</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.50">
+      <Point><coordinates>-82.40352,48.99348</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.51">
+      <Point><coordinates>-82.409012,48.982195</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.52">
+      <Point><coordinates>-80.450365,51.538057</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.53">
+      <Point><coordinates>-80.446304,51.537634</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.54">
+      <Point><coordinates>-80.421779,51.537458</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.55">
+      <Point><coordinates>-80.35896,51.34127</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.56">
+      <Point><coordinates>-80.3556205,51.3421985</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.57">
+      <Point><coordinates>-80.3556205,51.3421985</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.58">
+      <Point><coordinates>-82.249077,53.061806</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.59">
+      <Point><coordinates>-82.249939,53.07019</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.60">
+      <Point><coordinates>-82.248901,53.064804</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.61">
+      <Point><coordinates>-82.398102,54.3466</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.62">
+      <Point><coordinates>-82.277901,54.091339</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.63">
+      <Point><coordinates>-82.249458,53.078167</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.64">
+      <Point><coordinates>-82.249031,53.08094</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.65">
+      <Point><coordinates>-82.250809,53.086922</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.66">
+      <Point><coordinates>-82.249878,53.076435</coordinates></Point>
+  </Placemark>
+  <Placemark id="missing_fnlc.67">
+      <Point><coordinates>-82.25045,53.083858</coordinates></Point>
+  </Placemark>
+</Folder>
+</Document></kml>

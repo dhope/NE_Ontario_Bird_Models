@@ -19,6 +19,7 @@ ld <- list.dirs(
   recursive = F
 )
 
+## TODO NAflag() for layers where zero is actually NA -------------
 
 library(terra)
 ## List of all layers
@@ -76,7 +77,7 @@ olcc_100 <- olcc_extract(olcc, 100)
 
 cat_layers <- terra::rast(
   str_subset(ll_no_proc_cls, "lc|geo|wat_", negate = F) |>
-    str_subset("asp8|geob|geoq|_sp_orig", negate = T)
+    str_subset("asp8|geob|geoq|Quat_", negate = T)
 )
 
 
@@ -167,19 +168,25 @@ fire_100$harv_rec30m_100 |> janitor::tabyl()
 
 
 non_lc <- ll_no_proc_cls |>
-  str_subset("lc|geo|/sp_|wat_|fire|insct|harv|asp", negate = T) |>
-  str_subset("lc|info|orig|1km|_200|asp8|wat_|fire|insct|harv|dem")
+  str_subset("lc|geo|/sp_|wat_|fire|insct|harv|asp|Annual", negate = T) #|>
+# str_subset("lc|info|orig|1km|_200|asp8|wat_|fire|insct|harv|dem", negate = T)
+
+non_mean <- non_lc |>
+  str_subset("watd")
 
 # non_lc <- ll[(str_detect(ll, "orig", negate = F) &
 #                 +                 str_detect(ll, "lc|geo|/sp_|wat_|fire|insct|harv", negate = T))|
 #                +                (str_detect(ll, "lc|info|orig|1km|_200|asp8|wat_|fire|insct|harv", negate = T) )
 #              +              ]
 
-get_non_lc <- function(r, dist_) {
+get_non_lc <- function(r, dist_, f = 'mean') {
   map(
     r,
     ~ {
       r <- rast(.x)
+      if (str_detect(.x, "age|SCANFI_cls|d2s")) {
+        NAflag(r) <- 0
+      }
       print(r)
       if (str_detect(.x, "dem")) {
         n <- str_extract(.x, "(dem_\\w+)")
@@ -197,7 +204,7 @@ get_non_lc <- function(r, dist_) {
           st_buffer(locs, dist = dist_),
           st_crs(r)
         ),
-        'mean'
+        f
       ) %>%
         tibble::tibble(
           {{ n }} := .
@@ -208,9 +215,15 @@ get_non_lc <- function(r, dist_) {
     bind_cols()
 }
 
-non_lc_r <- get_non_lc(non_lc, 100)
-non_lc_r_500 <- get_non_lc(non_lc, 500)
+non_lc_r_m <- get_non_lc(str_subset(non_lc, "watd", negate = T), 100)
+non_lc_r_min <- get_non_lc(non_mean, 100, f = 'min')
+# cls_500 <- get_non_lc(str_subset(non_lc, "cls"), f = 'mode', 500)
+# non_lc_r_500 <- get_non_lc(non_lc, 500)
+non_lc_r_m5 <- get_non_lc(str_subset(non_lc, "watd", negate = T), 500)
+non_lc_r_min_500 <- get_non_lc(non_mean, 500, f = 'min')
+# cls_comp <- tibble(mean =non_lc_r_m5$NFIS_cls_500, mode = cls_500$NFIS_cls_500) |> mutate( rn=row_number())
 
+# filter(cls_comp, mode ==0) |> slice_max(mean)
 
 # To fix ---------
 # dem_pslp # perspective (direction)
@@ -239,10 +252,12 @@ den_roads_500 <- st_buffer(locs, 500) |>
 cov <- bind_cols(
   cat_layers_100,
   olcc_100,
-  non_lc_r,
+  non_lc_r_m,
+  non_lc_r_min,
   cat_layers_500,
   olcc_500,
-  non_lc_r_500,
+  non_lc_r_m5,
+  non_lc_r_min_500,
   mod_ex_100,
   mod_ex_500,
   fire_100,
@@ -278,7 +293,7 @@ if (run_a2) {
 
 
 ocean_sf <- "output/oceans_sf_from_raster.rds"
-if (!file_exists(ocean_sf)) {
+if (!file.exists(ocean_sf)) {
   oce_eol <- rast(g("{OCE_EOL_LOC}/OCE_EOL_2023.tif")) %>%
     terra::crop(st_transform(ra_buffer, st_crs(.)))
   oce_eol_df <- terra::as.data.frame(oce_eol, xy = TRUE)

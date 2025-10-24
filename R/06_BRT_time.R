@@ -15,9 +15,9 @@ aoi <- read_rds(g("output/rds/{date_compiled}_Area_of_focus_mesh.rds"))
 # Load data ---------
 
 spatial_cov <-
-  "output/rds/2025-09-10_spatial_covariates_data.rds" |>
+  "output/rds/2025-10-23_spatial_covariates_data.rds" |>
   read_rds() |>
-  mutate(d2O = read_rds("output/rds/2025-09-10_dist2ocean.rds")) |>
+  mutate(d2O = read_rds("output/rds/2025-10-23_dist2ocean.rds")) |>
   bind_cols(individual_locs) |> #Spatial_covariates_data_14March2024.rds") |>
   distinct() |>
   st_as_sf() %>%
@@ -350,7 +350,8 @@ run_brt <- function(spp) {
       contains("project"),
       contains("total"),
       contains("event_id"),
-      contains("collection")
+      contains("collection"),
+      contains("OHN_swatd_500")
     ) |> #,X,Y ) |>
 
     step_novel() |>
@@ -625,8 +626,8 @@ run_brt <- function(spp) {
     fit_workflow,
     new_data = preds |>
       mutate(
-        doy = NA, #161,
-        t2se = NA, #-30,
+        doy = NA, #162,
+        t2se = NA, #30,
         Time_period = "Dawn",
         year = factor(2026),
         event_gr = "Dawn",
@@ -650,12 +651,14 @@ run_brt <- function(spp) {
   plan(sequential)
   write_rds(p, glue::glue("{prediction_layer_loc}/{spp}_time_pred_brt.rds"))
   r_pred <- rast(g("{prediction_layer_loc}/2025-08-26_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
-
-  predicted_raster <- rast(r_pred[[1]])
+  pobs <- 1 - dpois(0, lambda = p$.pred)
+  r_pobs <- predicted_raster <- rast(r_pred[[1]])
   r2 <- terra::cellFromXY(predicted_raster, preds[, c("X", "Y")])
   predicted_raster[r2] <- p
+  r_pobs[r2] <- pobs
   predicted_raster <- mask(predicted_raster, aoi)
-  names(predicted_raster) <- spp
+  r_pobs <- mask(r_pobs, aoi)
+  names(r_pobs) <- names(predicted_raster) <- spp
 
   terra::writeRaster(
     predicted_raster,
@@ -687,25 +690,103 @@ run_brt <- function(spp) {
   #        colour = "#\nNon-zero\ncounts") +
   #   geom_sf(data = quat_loc, fill = NA, colour = 'white')
   # dev.off()
+  blob <- read_sf("E:/SPATIAL/RA_Blob/MiningClaimsRoF_July2025.shp") |>
+    st_transform(ont.proj)
+  # map_plot <- ggplot() +
+  #   tidyterra::geom_spatraster(data = predicted_raster, maxcell = 2e6) +
+  #   labs(fill = "individuals/ha", title = spp, colour = "#\nNon-zero\ncounts") +
+  #   tidyterra::scale_fill_whitebox_c(
+  #     palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
+  #     # labels = scales::label_number(suffix = "indiv/ha"),
+  #     n.breaks = 8,
+  #     limits = quantile(p, c(0, 0.999), na.rm = T),
+  #     guide = guide_legend(reverse = TRUE)
+  #   ) +
+  #   # geom_sf(data = napken_lake, shape =2 )+
+  #   # geom_sf(data = locs_in) +
+  #   geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
+  #   geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
 
-  map_plot <- ggplot() +
-    tidyterra::geom_spatraster(data = predicted_raster, maxcell = 1e6) +
-    labs(fill = "individuals/ha", title = spp, colour = "#\nNon-zero\ncounts") +
+  can <- st_read("E:/CWS_ONT_local/Base_Data/canada.shp") %>%
+    # filter(NAME %in% c("Manitoba", "Québec", )) |>
+    st_transform(ont.proj, partial = F, check = T)
+
+  inset <- ggplot() +
+    geom_sf(data = can, fill = NA) +
+    geom_sf(
+      data = ra_area_official,
+      fill = tidyterra::wiki.colors(1),
+      alpha = 0.8
+    ) +
+    ggthemes::theme_map()
+
+  map_plot <-
+    ggplot() +
+    tidyterra::geom_spatraster(
+      data = mask(predicted_raster, ra_area),
+      maxcell = 1e6
+    ) +
+    labs(
+      fill = "individuals/ha",
+      title = NULL,
+      colour = "#\nNon-zero\ncounts"
+    ) +
+    tidyterra::scale_fill_wiki_c(
+      # palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
+      # labels = scales::label_number(suffix = "indiv/ha"),
+      # n.breaks = 8,
+      limits = quantile(p, c(0, 0.999), na.rm = T),
+      guide = guide_legend(reverse = TRUE)
+    ) +
+    geom_sf(data = blob, fill = 'red', alpha = 0.4, colour = NA) +
+    ggthemes::theme_map()
+
+  # ggsave(
+  #   "output/CONW_with_inset_rof.jpeg",
+  #   test_plot +
+  #     patchwork::inset_element(inset, 0.7, 0.6, 1.2, 1),
+  #   width = 8,
+  #   height = 6
+  # )
+  # ggsave("output/CONW_no_inset_rof.jpeg", test_plot, width = 8, height = 6)
+
+  p_obs_plot <-
+    ggplot() +
+    tidyterra::geom_spatraster(
+      data = mask(r_pobs, ra_area_official),
+      maxcell = 2e6
+    ) +
+    labs(
+      fill = "Probability\nof\nobservation",
+      title = spp,
+      colour = "#\nNon-zero\ncounts"
+    ) +
     tidyterra::scale_fill_whitebox_c(
       palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
       # labels = scales::label_number(suffix = "indiv/ha"),
       n.breaks = 8,
-      limits = c(min_q, quantile(p, 0.999, na.rm = T)),
+      limits = quantile(pobs, c(0, 0.999), na.rm = T),
       guide = guide_legend(reverse = TRUE)
     ) +
+    geom_sf(data = BASSr::ontario, fill = NA) +
     # geom_sf(data = napken_lake, shape =2 )+
     # geom_sf(data = locs_in) +
     geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
-    geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
+    # geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black') +
+    coord_sf(
+      xlim = st_bbox(ra_buffer)[c(1, 3)],
+      ylim = st_bbox(ra_buffer)[c(2, 4)]
+    )
 
   ggsave(
     plot = map_plot,
     g("{out_dir}/{spp}_time_map.jpeg"),
+    width = 6.73,
+    height = 8.5
+  )
+  ggsave(
+    plot = p_obs_plot,
+    g("{out_dir}/{spp}_time_map_pobs.jpeg"),
     width = 6.73,
     height = 8.5
   )

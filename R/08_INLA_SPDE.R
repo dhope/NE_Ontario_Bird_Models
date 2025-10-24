@@ -12,7 +12,7 @@ test_training_data <- read_rds(g(
 ))
 
 train_locs <- test_training_data$train_recordings |>
-  left_join(aggregated_locs, by = join_by(project, location, collection)) |>
+  # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
   st_as_sf() |>
   dplyr::distinct(site_id_agg, geometry) |>
   filter(!st_is_empty(geometry))
@@ -49,7 +49,7 @@ if (run_a2) {
     ))
   out_dir_app <- "A2"
 } else {
-  spp_cov_file <- "output/rds/2025-09-10_spatial_covariates_data.rds"
+  spp_cov_file <- "output/rds/2025-10-23_spatial_covariates_data.rds"
   raw_recordings <- test_training_data$train_recordings |>
     left_join(aggregated_locs, by = join_by(project, location, collection)) |>
     filter(str_detect(
@@ -424,7 +424,8 @@ run_inlabru <- function(spp) {
     ) |>
     update_role(location, new_role = "id") %>%
     update_role(mean_count, new_role = "outcome") %>%
-    step_novel() |>
+    step_zv(all_predictors()) |>
+    step_novel(all_factor_predictors()) |>
     step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
     step_impute_median(all_numeric_predictors()) |>
     step_center(all_numeric_predictors()) %>%

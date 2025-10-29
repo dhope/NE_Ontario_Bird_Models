@@ -74,7 +74,7 @@ spatial_cov <-
   read_rds() %>%
   {
     if (!run_a2) {
-      mutate(., d2O = read_rds("output/rds/2025-09-10_dist2ocean.rds"))
+      mutate(., d2O = read_rds("output/rds/2025-10-09_dist2ocean.rds"))
     } else {
       .
     }
@@ -419,15 +419,36 @@ run_inlabru <- function(spp) {
       # contains("location"),
       contains("project"),
       contains("total"),
+      contains("d2s"),
+      contains("insct"),
       contains("event_id"),
-      contains("collection")
-    ) |>
+      contains("collection"),
+      contains("OHN_swatd_500")
+    ) |> #,X,Y ) |>
     update_role(location, new_role = "id") %>%
     update_role(mean_count, new_role = "outcome") %>%
     step_zv(all_predictors()) |>
     step_novel(all_factor_predictors()) |>
     step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
     step_impute_median(all_numeric_predictors()) |>
+    step_mutate(
+      across(
+        contains("rec30") & where(is.factor) & contains("fire"),
+        ~ case_when(
+          as.numeric(as.character(.x)) == 0 ~
+            as.numeric(as.character(year)) - 1955,
+          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+        )
+      ),
+      across(
+        contains("rec30") & where(is.factor) & contains("harvest"),
+        ~ case_when(
+          as.numeric(as.character(.x)) == 0 ~
+            as.numeric(as.character(year)) - 1980,
+          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+        )
+      )
+    ) |>
     step_center(all_numeric_predictors()) %>%
     step_scale(
       all_numeric_predictors(),
@@ -448,10 +469,15 @@ run_inlabru <- function(spp) {
 
   pca_rec <- dat_rec %>%
     step_rm(mean_count) |>
-    step_pca(all_numeric_predictors(), id = "pca", num_comp = 10)
+    step_pca(
+      all_numeric_predictors(),
+      id = "pca",
+      # threshold = 0.99,
+      num_comp = 12
+    )
 
   pls_rec <- dat_rec %>%
-    step_pls(all_numeric_predictors(), outcome = 'mean_count', num_comp = 10)
+    step_pls(all_numeric_predictors(), outcome = 'mean_count', num_comp = 12)
   # embed::step_umap(all_numeric_predictors(), outcome = vars(avg_price_per_room))
   # step_spline_natural(arrival_date_num, deg_free = 10)
 
@@ -1083,15 +1109,17 @@ run_inlabru <- function(spp) {
     r <- map(
       res_tbl$name,
       ~ {
-        spde.posterior(res_map[[.x]], name = name, what = what) |>
-          mutate(model = .x) |>
-          separate_wider_delim(
-            model,
-            names = c("dist", "mod_type"),
-            too_many = 'merge',
-            delim = "_",
-            cols_remove = F
-          )
+        if (is_null(res_map[[.x]]$error)) {
+          spde.posterior(res_map[[.x]], name = name, what = what) |>
+            mutate(model = .x) |>
+            separate_wider_delim(
+              model,
+              names = c("dist", "mod_type"),
+              too_many = 'merge',
+              delim = "_",
+              cols_remove = F
+            )
+        }
       }
     ) |>
       list_rbind()
@@ -1141,6 +1169,9 @@ run_inlabru <- function(spp) {
   )
 
   gen_summary_table_ <- function(name, mod_list) {
+    if (!is_null(mod_list[[name]]$error)) {
+      return(NULL)
+    }
     tt <- mod_list[[name]]$summary.hyperpar |>
       as_tibble(rownames = 'var') |>
       janitor::clean_names() |>

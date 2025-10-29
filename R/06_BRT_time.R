@@ -15,9 +15,9 @@ aoi <- read_rds(g("output/rds/{date_compiled}_Area_of_focus_mesh.rds"))
 # Load data ---------
 
 spatial_cov <-
-  "output/rds/2025-10-23_spatial_covariates_data.rds" |>
+  "output/rds/2025-10-28_spatial_covariates_data.rds" |>
   read_rds() |>
-  mutate(d2O = read_rds("output/rds/2025-10-23_dist2ocean.rds")) |>
+  mutate(d2O = read_rds("output/rds/2025-10-28_dist2ocean.rds")) |>
   bind_cols(individual_locs) |> #Spatial_covariates_data_14March2024.rds") |>
   distinct() |>
   st_as_sf() %>%
@@ -349,6 +349,8 @@ run_brt <- function(spp) {
       contains("location"),
       contains("project"),
       contains("total"),
+      contains("d2s"),
+      contains("insct"),
       contains("event_id"),
       contains("collection"),
       contains("OHN_swatd_500")
@@ -357,15 +359,24 @@ run_brt <- function(spp) {
     step_novel() |>
     step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
     step_impute_median(all_numeric_predictors()) |>
-    step_mutate(across(
-      contains("rec30") & where(is.factor),
-      ~ case_when(
-        as.numeric(as.character(.x)) == 0 ~ NA_integer_,
-        as.numeric(as.character(year)) < as.numeric(as.character(.x)) ~
-          NA_integer_,
-        TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+    step_mutate(
+      across(
+        contains("rec30") & where(is.factor) & contains("fire"),
+        ~ case_when(
+          as.numeric(as.character(.x)) == 0 ~
+            as.numeric(as.character(year)) - 1955,
+          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+        )
+      ),
+      across(
+        contains("rec30") & where(is.factor) & contains("harvest"),
+        ~ case_when(
+          as.numeric(as.character(.x)) == 0 ~
+            as.numeric(as.character(year)) - 1980,
+          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+        )
       )
-    )) |>
+    ) |>
     step_zv(all_predictors(), -starts_with('QPAD_offset')) |>
     step_center(all_numeric_predictors(), -starts_with('QPAD_offset')) |>
     step_scale(
@@ -393,6 +404,7 @@ run_brt <- function(spp) {
 
   tic("Prep")
   df_prepped <- prep(xgb_rec) |> bake(new_data = NULL) |> dplyr::select(-y)
+
   toc()
   if (no_off) {
     xgb_wf <- xgb_rec |>
@@ -414,7 +426,7 @@ run_brt <- function(spp) {
     # finalize(mtry(), df_prepped),
     learn_rate = learn_rate(range = c(-5, -0.5)),
     # stop_iter(range = c(1, 500)),
-    size = 20
+    size = 30
   )
 
   withr::with_seed(123, {
@@ -516,8 +528,8 @@ run_brt <- function(spp) {
         event_gr = c("Dawn", "Dusk"),
         doy = 122:202
       ) |>
-      bind_rows(df_std) |>
-      filter(is.na(X))
+      bind_rows(df_std |> select(-t2se)) |>
+      filter(!is.na(t2se))
 
     pred_t <- predict(fit_workflow, t_pred)
     t_pred$.pred <- pred_t$.pred
@@ -560,11 +572,12 @@ run_brt <- function(spp) {
     write_rds(explainer, glue::glue("{bundle_locs}/{spp}_time_explainer.rds"))
 
     preds_org <- predict(fit_workflow, new_data = df_std) |> bind_cols(df_std)
-    collect_metrics(fit_workflow)
+    # collect_metrics(fit_workflow)
     write_rds(preds_org, g("{out_dir}/{spp}_time_model_pred.rds"))
 
     vars_ <- vi_tbl |> slice_head(n = 15) |> pull(Variable)
 
+    # DALEX::model_diagnostics(explainer, vars_[vars_ %in% names(explainer$data)])
     pd <- DALEX::model_profile(
       explainer = explainer,
       variables = vars_[vars_ %in% names(explainer$data)]
@@ -603,7 +616,7 @@ run_brt <- function(spp) {
   tic("Run predictions")
 
   preds <- read_rds(g(
-    "{prediction_layer_loc}/2025-08-26_prediction_rasters_df.rds"
+    "{prediction_layer_loc}/2025-10-22_prediction_rasters_df.rds"
   ))
   preds$d2O <- read_rds(g(
     "{prediction_layer_loc}/distance_2_ocean_prediction.rds"
@@ -650,7 +663,7 @@ run_brt <- function(spp) {
 
   plan(sequential)
   write_rds(p, glue::glue("{prediction_layer_loc}/{spp}_time_pred_brt.rds"))
-  r_pred <- rast(g("{prediction_layer_loc}/2025-08-26_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
+  r_pred <- rast(g("{prediction_layer_loc}/2025-10-21_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
   pobs <- 1 - dpois(0, lambda = p$.pred)
   r_pobs <- predicted_raster <- rast(r_pred[[1]])
   r2 <- terra::cellFromXY(predicted_raster, preds[, c("X", "Y")])

@@ -41,7 +41,7 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 
   print(g("Preping predictions, {spp} --------------------------"))
 
-  pred_date <- ifelse(run_a2, "2025-01-10", "2025-08-26") #"2025-02-28")
+  pred_date <- ifelse(run_a2, "2025-01-10", "2025-10-22") #"2025-02-28")
 
   preds_r <- read_rds(g(
     "{prediction_layer_loc}/{pred_date}_prediction_rasters_df.rds"
@@ -203,17 +203,18 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
   ff_g <- glue::glue(
     '{res$misc$configs$contents$tag[-c(1,2)] |> glue::glue_collapse(sep = " + ")}'
   )
+  linear_or_spde <- ifelse(str_detect(ff_g, "linear"), 'linear', 'spat')
 
   if (run_a2 | str_detect(ff_g, "PC01|PLS01", negate = T)) {
     ff_counts <- paste0(
       "Intercept +  o + t2se + doy +",
-      paste0("spat_cov_", p_vars, collapse = "+"),
+      paste0(linear_or_spde, "_cov_", p_vars, collapse = "+"),
       "+ alpha"
     ) #|>
   } else {
     ff_counts <- paste0(
       "Intercept + RecLength + o + t2se + time_group + doy +",
-      paste0("spat_cov_", p_vars, collapse = "+"),
+      paste0(linear_or_spde, "_cov_", p_vars, collapse = "+"),
       "+ alpha"
     ) #|>
   }
@@ -429,7 +430,7 @@ gen_maps <- function(spp, preds = NULL) {
 
   rm(preds_t, preds)
 
-  pred_date <- ifelse(run_a2, "2025-01-10", "2025-08-26") #"2025-02-28")
+  pred_date <- ifelse(run_a2, "2025-01-10", "2025-10-22") #"2025-02-28")
 
   # xy <- read_rds(g(
   #   "{prediction_layer_loc}/{pred_date}_prediction_rasters_xy.rds"
@@ -579,7 +580,7 @@ gen_maps <- function(spp, preds = NULL) {
   rm(pres_counts, pres_counts_sp, pres_obs)
   # ggplot(p, aes(X_sc, Y_sc, colour =est )) + geom_point(alpha = 0.4)
   r_pred <- rast(glue::glue(
-    "{prediction_layer_loc}/{pred_date}_prediction_rasters.nc"
+    "{prediction_layer_loc}/2025-10-21_prediction_rasters.nc"
   ))
 
   r_temp <- rast(r_pred[[1]]) #g("{pred_date}_prediction_rasters_1")]])

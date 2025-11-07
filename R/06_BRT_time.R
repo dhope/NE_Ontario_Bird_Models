@@ -136,24 +136,25 @@ prep_brt_data <- function(spp) {
     dur,
     species_code = spp
   ) |>
-    mutate(o = 0, dur = round(dur))
+    mutate(o = NA)#, dur = round(dur,2))
 
-  if (spp %in% na_pops_offsets$species[!is.na(na_pops_offsets$o)]) {
-    offsets_spp <- left_join(
-      offsets_spp |> dplyr::select(-o),
-      filter(na_pops_offsets, species == spp & max_dist == Inf),
-      by = join_by(species_code == species, dur == time_minutes)
-    )
-  } else {
-    if (spp %in% qpad_offsets$species) {
-      # offsets_spp <- filter(qpad_offsets, species == spp)
-      offsets_spp <- left_join(
-        offsets_spp |> dplyr::select(-o),
-        filter(qpad_offsets, species == spp & max_dist == Inf),
-        by = join_by(species_code == species, dur == time_minutes)
-      )
-    }
-  }
+  # if (spp %in% na_pops_offsets$species[!is.na(na_pops_offsets$o)]) {
+  #   
+  #   offsets_spp <- left_join(
+  #     offsets_spp |> dplyr::select(-o),
+  #     filter(na_pops_offsets, species == spp & max_dist == Inf),
+  #     by = join_by(species_code == species, dur == time_minutes)
+  #   )
+  # } else {
+  #   if (spp %in% qpad_offsets$species) {
+  #     # offsets_spp <- filter(qpad_offsets, species == spp)
+  #     offsets_spp <- left_join(
+  #       offsets_spp |> dplyr::select(-o),
+  #       filter(qpad_offsets, species == spp & max_dist == Inf),
+  #       by = join_by(species_code == species, dur == time_minutes)
+  #     )
+  #   }
+  # }
 
   if (!"max_dist" %in% names(offsets_spp)) {
     offsets_spp$max_dist <- Inf
@@ -187,7 +188,7 @@ prep_brt_data <- function(spp) {
     #             dplyr::select(project:recording_id, date_time:t2se, dur),
     #           by = join_by(project, project_id, location, recording_id)
     # ) |>
-    mutate(Rec_length = factor(as.numeric(round(dur, 1)))) |>
+    mutate(Rec_length = dur) |> #factor(as.numeric(round(dur, 1)))) |>
     mutate(
       year = factor(year),
       SiteN = as.numeric(factor(location)),
@@ -334,7 +335,7 @@ run_brt <- function(spp) {
 
   xgb_rec <-
     df_std %>%
-    recipe(y ~ .) %>%
+    recipe() %>%
     {
       if (no_off) {
         step_rm(., QPAD_offset)
@@ -342,6 +343,8 @@ run_brt <- function(spp) {
         .
       }
     } |>
+    update_role(y, new_role ='outcome') |> 
+    update_role(-y, new_role= 'predictor') |> 
     update_role(event_id, new_role = "id") %>%
     # update_role(QPAD_offset, new_role = "offset") %>%
 
@@ -353,11 +356,18 @@ run_brt <- function(spp) {
       contains("insct"),
       contains("event_id"),
       contains("collection"),
-      contains("OHN_swatd_500")
+      contains("OHN_swatd_500"),
+      contains("dem_asp8")
     ) |> #,X,Y ) |>
-
+    step_mutate(NFIS_is_forest_100 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+                NFIS_is_forest_500 = #across(contains("NFIS_age_500"),
+                                            factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+    ) |> 
     step_novel() |>
     step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
+    step_zv(all_predictors(), -starts_with('QPAD_offset')) |>
+    step_impute_linear(contains("Climate"),
+                    impute_with = imp_vars(c(X,Y) ) ) |> 
     step_impute_median(all_numeric_predictors()) |>
     step_mutate(
       across(
@@ -377,7 +387,7 @@ run_brt <- function(spp) {
         )
       )
     ) |>
-    step_zv(all_predictors(), -starts_with('QPAD_offset')) |>
+    
     step_center(all_numeric_predictors(), -starts_with('QPAD_offset')) |>
     step_scale(
       all_numeric_predictors(),
@@ -397,7 +407,7 @@ run_brt <- function(spp) {
       unique_cut = 2
     ) |>
     step_corr(
-      all_predictors(),
+      all_numeric_predictors(),
       -starts_with('QPAD_offset'),
       threshold = 0.95
     )
@@ -409,7 +419,7 @@ run_brt <- function(spp) {
   if (no_off) {
     xgb_wf <- xgb_rec |>
       workflow() %>%
-      add_model(xgb_spec(no_off, 300), formula = y ~ .)
+      add_model(xgb_spec(no_off, 300))
   } else {
     xgb_wf <- xgb_rec |>
       workflow() %>%
@@ -462,6 +472,8 @@ run_brt <- function(spp) {
   )
   toc()
 
+  plan(sequential)
+  plan(multisession, workers = 10)
   tic("Tune bayes")
   xgb_bayes <- tune_bayes(
     xgb_wf,
@@ -511,7 +523,7 @@ run_brt <- function(spp) {
     best_rmse
   )
 
-  fit_workflow <- fit(final_xgb, df_std)
+  fit_workflow <- workflows::fit(final_xgb, df_std)
   toc()
   # extract_fit_engine(fit_workflow) |> collect_metrics()
   saveRDS(
@@ -521,14 +533,16 @@ run_brt <- function(spp) {
 
   cat(glue::glue("Final model fit for {spp}\n"))
 
-  try({
+ 
     t_pred <-
       expand_grid(
         t2se = seq(-60, 240),
         event_gr = c("Dawn", "Dusk"),
         doy = 122:202
-      ) |>
-      bind_rows(df_std |> select(-t2se)) |>
+      ) |> bind_cols(df_std |> select(-t2se, -doy) |> 
+                       summarize(across(where(is.numeric), \(x) median(x, na.rm=T)) )
+                      ) |> 
+      bind_rows(df_std |> select(-t2se, -doy) ) |>
       filter(!is.na(t2se))
 
     pred_t <- predict(fit_workflow, t_pred)
@@ -563,15 +577,16 @@ run_brt <- function(spp) {
       width = 8,
       height = 6
     )
-
+    try({
     explainer <- fit_workflow %>%
       DALEXtra::explain_tidymodels(
         data = df_std %>% select(-y),
         y = df_std$y,
       )
-    write_rds(explainer, glue::glue("{bundle_locs}/{spp}_time_explainer.rds"))
-
+    # write_rds(explainer, glue::glue("{bundle_locs}/{spp}_time_explainer.rds"))
+    tic()
     preds_org <- predict(fit_workflow, new_data = df_std) |> bind_cols(df_std)
+    toc()
     # collect_metrics(fit_workflow)
     write_rds(preds_org, g("{out_dir}/{spp}_time_model_pred.rds"))
 
@@ -614,6 +629,19 @@ run_brt <- function(spp) {
   #   "{BRT_output_loc}/{spp}"
   # )
   tic("Run predictions")
+  
+  period_to_use <- t_pred |> summarize(.pred = median(.pred), .by = c(event_gr)) |> 
+    slice_max( order_by = .pred, 
+                             n=1,with_ties = F) |> 
+   pull(event_gr)
+  
+  doy_used <- t_pred |> filter( event_gr == period_to_use) |> 
+    summarize(.pred = median(.pred), .by = c(doy)) |> 
+    slice_max( order_by = .pred, 
+               n=1,with_ties = F) |> 
+    pull(doy)
+  
+
 
   preds <- read_rds(g(
     "{prediction_layer_loc}/2025-10-22_prediction_rasters_df.rds"
@@ -633,21 +661,23 @@ run_brt <- function(spp) {
   #   readRDS(
   #     glue::glue("{bundle_locs}/{spp}_time_bundle.rds")
   #   )
+
+  
   library(future)
-  plan(multisession, workers = 2)
+  plan(multisession, workers = 32)
   p <- predict(
     fit_workflow,
     new_data = preds |>
       mutate(
-        doy = NA, #162,
-        t2se = NA, #30,
-        Time_period = "Dawn",
+        doy = doy_used,
+        t2se = 0, #30,
+        Time_period = period_to_use,
         year = factor(2026),
         event_gr = "Dawn",
         source = NA,
         collection = NA,
         type = NA,
-        Rec_length = factor(5),
+        Rec_length = (5),
         SiteN = NA,
         longitude = NA,
         latitude = NA,
@@ -667,7 +697,7 @@ run_brt <- function(spp) {
   pobs <- 1 - dpois(0, lambda = p$.pred)
   r_pobs <- predicted_raster <- rast(r_pred[[1]])
   r2 <- terra::cellFromXY(predicted_raster, preds[, c("X", "Y")])
-  predicted_raster[r2] <- p
+  predicted_raster[r2] <- p$.pred
   r_pobs[r2] <- pobs
   predicted_raster <- mask(predicted_raster, aoi)
   r_pobs <- mask(r_pobs, aoi)
@@ -678,7 +708,12 @@ run_brt <- function(spp) {
     glue::glue("{out_dir_spatial}/{spp}_time_brt.tif"),
     overwrite = T
   )
-
+  terra::writeRaster(
+    r_pobs,
+    glue::glue("{out_dir_spatial}/{spp}_pobs_time_brt.tif"),
+    overwrite = T
+  )
+  
   min_q <- min(p, na.rm = T)
 
   mf_route <- read_sf(
@@ -774,8 +809,8 @@ run_brt <- function(spp) {
       title = spp,
       colour = "#\nNon-zero\ncounts"
     ) +
-    tidyterra::scale_fill_whitebox_c(
-      palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
+    tidyterra::scale_fill_wiki_c(
+      # palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
       # labels = scales::label_number(suffix = "indiv/ha"),
       n.breaks = 8,
       limits = quantile(pobs, c(0, 0.999), na.rm = T),
@@ -793,13 +828,13 @@ run_brt <- function(spp) {
 
   ggsave(
     plot = map_plot,
-    g("{out_dir}/{spp}_time_map.jpeg"),
+    g("{out_dir}/{spp}_time_map_{period_to_use}_{doy_used}.jpeg"),
     width = 6.73,
     height = 8.5
   )
   ggsave(
     plot = p_obs_plot,
-    g("{out_dir}/{spp}_time_map_pobs.jpeg"),
+    g("{out_dir}/{spp}_time_map_pobs_{period_to_use}_{doy_used}.jpeg"),
     width = 6.73,
     height = 8.5
   )

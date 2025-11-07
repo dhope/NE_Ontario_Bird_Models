@@ -15,8 +15,8 @@ spp_codes_full_run <-
   filter(!is.na(species_code) & n_sites > 10)
 
 spp_completed <- list.files(
-  path = BRT_output_loc,
-  "\\w{4}_time_map",
+  path = bundle_locs,
+  "\\w{4}_time",
   recursive = T
 ) |>
   str_extract("\\w{4}") |>

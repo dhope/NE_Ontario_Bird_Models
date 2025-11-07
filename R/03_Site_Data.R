@@ -179,7 +179,8 @@ non_mean <- non_lc |>
 #                +                (str_detect(ll, "lc|info|orig|1km|_200|asp8|wat_|fire|insct|harv", negate = T) )
 #              +              ]
 
-get_non_lc <- function(r, dist_, f = 'mean') {
+get_non_lc <- function(r, dist_, f = 'mean',ii=NULL) {
+  if(is_null(ii)){ii <- 1:nrow(locs)}
   map(
     r,
     ~ {
@@ -201,7 +202,7 @@ get_non_lc <- function(r, dist_, f = 'mean') {
       exactextractr::exact_extract(
         r,
         st_transform(
-          st_buffer(locs, dist = dist_),
+          st_buffer(locs[ii,], dist = dist_),
           st_crs(r)
         ),
         f

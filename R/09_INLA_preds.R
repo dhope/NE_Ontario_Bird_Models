@@ -13,19 +13,20 @@ locs_in <- st_filter(individual_locs, ra_area)
 
 
 prep_predictions <- function(spp, save_objects, return_all = FALSE) {
+  spp_dir <- str_replace(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
     out_dir_app <- ""
   }
   out_dir_spatial <- g(
-    "{INLA_output_loc_spatial}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
   )
   out_dir <- g(
-    "{INLA_output_loc}/{out_dir_app}/{spp}"
+    "{INLA_output_loc}/{out_dir_app}/{spp_dir}"
   )
   out_dir_tmp <- g(
-    "{INLA_output_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
 
   res <- read_rds(g("{out_dir_tmp}/{spp}_inlabru_model.rds"))
@@ -35,6 +36,8 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
   pca_prep <- read_rds(g("{out_dir_tmp}/pca_bundle.rds")) |>
     bundle::unbundle() |>
     recipes::prep()
+  basic_rec <- read_rds(g("{out_dir_tmp}/basic_bundle.rds")) |> 
+    bundle::unbundle() |> recipes::prep()
   pls_prep <- read_rds(g("{out_dir_tmp}/pls_bundle.rds")) |>
     bundle::unbundle() |>
     recipes::prep()
@@ -55,7 +58,7 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
       source = NA,
       collection = NA,
       type = NA,
-      Rec_length = factor(5),
+      # Rec_length = factor(5),
       SiteN = NA,
       longitude = NA,
       latitude = NA,
@@ -64,7 +67,8 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
       olcb_99_100 = NA,
       total_100 = NA,
       olcb_99_500 = NA,
-      total_500 = NA
+      total_500 = NA,
+      site_id = NA
     )
   # xy <- read_rds(g(
   #   "{prediction_layer_loc}/{pred_date}_prediction_rasters_xy.rds"
@@ -72,13 +76,16 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 
   # names(df_std)[names(df_std) %in% names(preds)]
   pca_pred_data <- preds_r |>
-    mutate(location = glue::glue("loc-{1:nrow(preds_r)}")) |>
+    mutate(site_id = glue::glue("loc-{rn}")) |>
     dplyr::select(any_of(names(pca_cov)))
-  pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) |>
-    dplyr::select(-location)
+  pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) 
 
-  pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) |>
-    dplyr::select(-location)
+  pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) 
+  included_vars <- read_rds(g("{out_dir_tmp}/included_variables.rds"))
+  
+  basic_preds <- bake(basic_rec, new_data = pca_pred_data)|> 
+    dplyr::select(site_id,all_of(list_c(included_vars))) |> 
+    mutate(rn = preds_r$rn)
 
   pc_vars <- str_subset(names(pca_preds), "^PC\\d")
   pls_vars <- str_subset(names(pls_preds), "^PLS\\d")
@@ -96,14 +103,19 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
     p_vars <- pls_vars
   } else if (str_detect(f, "_PC")) {
     p_vars <- pc_vars
-  } else {
+  } else if (str_detect(f, "_[51]00")){
+    p_vars <- list_c(included_vars)
+  }else {
     p_vars <- "project"
   }
 
   scaled_prediction <-
-    preds_r |>
-    bind_cols(pca_preds) %>%
-    bind_cols(pls_preds) %>%
+    {if(str_detect(f, "_[51]00")){
+      basic_preds}else{preds_r}} |>
+    bind_cols(pca_preds |> 
+                dplyr::select( -contains("is_forest"))) %>%
+    bind_cols(pls_preds|> 
+                dplyr::select( -contains("is_forest"))) %>%
     dplyr::select(rn, which(names(.) %in% p_vars)) |>
     pivot_longer(cols = -rn, names_to = 'variable', values_to = "x") |>
     left_join(sd_mn, by = join_by(variable)) |>
@@ -116,11 +128,11 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
     mutate(X_sc = X / 10000, Y_sc = Y / 10000) %>%
     # bind_cols(pca_preds) %>%
     dplyr::select(X, Y, !which(names(.) %in% p_vars)) |> #sd_mn$variable)) |>
-    bind_cols(scaled_prediction |> dplyr::select(-rn)) |>
+    bind_cols(scaled_prediction |> dplyr::select(-rn, -any_of("site_id"))) |>
     mutate(recording_id = factor("None")) |>
     st_as_sf(coords = c("X", "Y"), crs = ont.proj)
 
-  preds_sc$RL <- factor(5, levels = RL_Fac)
+  preds_sc$RL <- factor(5)
   # preds_sc$t2se_scaled <- t2se_mod
   if (!run_a2) {
     time_period_prediction <- slice_max(
@@ -207,13 +219,13 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 
   if (run_a2 | str_detect(ff_g, "PC01|PLS01", negate = T)) {
     ff_counts <- paste0(
-      "Intercept +  o + t2se + doy +",
+      "Intercept +   t2se + doy +",#o +
       paste0(linear_or_spde, "_cov_", p_vars, collapse = "+"),
       "+ alpha"
     ) #|>
   } else {
     ff_counts <- paste0(
-      "Intercept + RecLength + o + t2se + time_group + doy +",
+      "Intercept + RecLength  + t2se + time_group + doy +", #+ o
       paste0(linear_or_spde, "_cov_", p_vars, collapse = "+"),
       "+ alpha"
     ) #|>
@@ -290,16 +302,17 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 }
 
 run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
+  spp_dir <- str_replace(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
     out_dir_app <- ""
   }
   out_dir_tmp <- g(
-    "{INLA_output_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
   out_dir_tmp_preds <- g(
-    "{INLA_preds_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_preds_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
   out_rds_file <- g("{out_dir_tmp_preds}/{spp}_predictions_full.rds")
   if (file.exists(out_rds_file)) {
@@ -325,7 +338,7 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
   gc()
   nsamp <- 300
   print(g("Starting predictions, {spp} --------------------------"))
-  if (str_detect(ff_g, "PC01|PLS01")) {
+  if (str_detect(ff_g, "PC01|PLS01|_[15]00")) {
     gc()
     tic(g("Running predictions, {spp} --------------------------"))
 
@@ -333,7 +346,7 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
       res,
       pred_test,
       switch(fam, 'poisson' = ff_complex, "zeroinflatedpoisson1" = ff_zi),
-      num.threads = 2,
+      num.threads = 1,
       n.samples = nsamp
     ) # %>% exp()
 
@@ -362,23 +375,24 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
 }
 
 gen_maps <- function(spp, preds = NULL) {
+  spp_dir <- str_replace(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
     out_dir_app <- ""
   }
   out_dir_tmp <- g(
-    "{INLA_output_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
   out_dir_tmp_preds <- g(
-    "{INLA_preds_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_preds_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
 
   out_dir_spatial <- g(
-    "{INLA_output_loc_spatial}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
   )
   out_dir <- g(
-    "{INLA_output_loc}/{out_dir_app}/{spp}"
+    "{INLA_output_loc}/{out_dir_app}/{spp_dir}"
   )
   tictoc::tic()
   preds_file <- g("{out_dir_tmp_preds}/{spp}_predictions_full.rds")
@@ -658,7 +672,7 @@ gen_maps <- function(spp, preds = NULL) {
   #   "k_cv")
 
   # terra::writeCDF(outstack, filename = glue::glue("{out_dir_spatial}/Predictions_{spp}.nc"),overwrite=T, split=T)
-
+browser()
   for (i in names_outstack) {
     terra::writeRaster(
       outstack[[i]],
@@ -669,37 +683,50 @@ gen_maps <- function(spp, preds = NULL) {
 
   expectations <- str_subset(names_outstack, "mean|median|p_obs")
   errors <- str_subset(names_outstack, "mean|median|p_obs", negate = T)
-  napken_lake <- read_sf(
-    nl_loc
-  ) |>
+  blob <- read_sf(blob_loc) |>
     st_transform(ont.proj)
-  locations <- read_sf(
-    place_names_loc
-  ) |>
-    st_transform(ont.proj)
-
   # locs_in <- locations[fmesher::fm_is_within(locations, mesh_inla),]
 
-  plot_map <- function(i) {
+  plot_map <- function(i,  type, max_q = 0.999) {
     min_q <- 0
     if (str_detect(i, "_sp")) {
       min_q <- min(preds_sc[[i]], na.rm = T)
     }
-    print(
-      ggplot() +
-        tidyterra::geom_spatraster(data = outstack[[i]], maxcell = 1e6) +
-        labs(fill = i, title = spp) +
-        tidyterra::scale_fill_whitebox_c(
-          palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
-          # labels = scales::label_number(suffix = "indiv/ha"),
-          n.breaks = 8,
-          limits = c(min_q, quantile(preds_sc[[i]], 0.995, na.rm = T)),
-          guide = guide_legend(reverse = TRUE)
+    # print(
+    #   ggplot() +
+    #     tidyterra::geom_spatraster(data = outstack[[i]], maxcell = 1e6) +
+    #     labs(fill = i, title = spp) +
+    #     tidyterra::scale_fill_whitebox_c(
+    #       palette = "muted", #breaks = c(0.05, 0.1, 0.2, 0.3, 0.8),
+    #       # labels = scales::label_number(suffix = "indiv/ha"),
+    #       n.breaks = 8,
+    #       limits = c(min_q, quantile(preds_sc[[i]], 0.999, na.rm = T)),
+    #       guide = guide_legend(reverse = TRUE)
+    #     ) +
+    #     geom_sf(data = napken_lake, shape = 2) +
+    #     # geom_sf(data = locs_in) +
+    #     geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
+    #     geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
+    pal <-   switch (type,
+                     "expectation" = tidyterra::scale_fill_wiki_c(
+                       limits =  c(min_q, quantile(preds_sc[[i]], max_q, na.rm = T)),
+                       guide = guide_legend(reverse = TRUE)
+                     ),
+                     "uncertainty" =  tidyterra::scale_fill_princess_c(
+                       palette = 'aura',
+                       limits =  c(min_q, quantile(preds_sc[[i]], max_q, na.rm = T))) 
+    )
+    
+      print(
+        ggplot() +
+        tidyterra::geom_spatraster(
+          data = mask(outstack[[i]], ra_area),
+          maxcell = 1e6
         ) +
-        geom_sf(data = napken_lake, shape = 2) +
-        # geom_sf(data = locs_in) +
-        geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
-        geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
+        labs(fill = i, title = spp) + pal+
+        geom_sf(data = blob, fill = 'red', alpha = 0.4, colour = NA) +
+        ggthemes::theme_map()
+      
     )
   }
   maps_ex <- g("{out_dir}/maps_expectations_{spp}.pdf")
@@ -711,11 +738,11 @@ gen_maps <- function(spp, preds = NULL) {
     file.remove(maps_uc)
   }
   cairo_pdf(maps_ex)
-  map(expectations, plot_map)
+  map(expectations, plot_map, type = 'expectation')
   dev.off()
 
   cairo_pdf(maps_uc)
-  map(errors, plot_map)
+  map(errors, plot_map, type = 'uncertainty')
   dev.off()
   toc()
   if (exists("preds_file")) file.remove(preds_file)

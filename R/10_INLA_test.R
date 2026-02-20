@@ -3,23 +3,24 @@ source("R/08_INLA_SPDE.R")
 
 test_training_data <- read_rds(g("output/{date_compiled}_test_training_data.rds"))
 test_locations <- test_training_data$test_locations
+train_ids <- test_training_data$train_recordings$event_id 
 test_recordings <- test_training_data$test_recordings
 rm(test_training_data, mesh_il, mesh_inla, mesh_inla_full, locs, ll_ag, locs_agg, locs_neighbours, run_brt, run_brt_preds)
 
-recordings <- 
-  g("{rds_data_loc}/all_events.rds") |> 
-  read_rds() |> 
-  filter(location %in% aggregated_locs$location) |> 
+recordings <-
+  g("{rds_data_loc}/all_events.rds") |>
+  read_rds() |>
+  filter(!event_id %in% train_ids) |>
   filter(collection %in% c("WildTrax", "ONATLAS3PC") &
-           str_detect(location, "WHA-", negate=T) & 
-           str_detect(project, "Nocturnal", negate = T) ) |> 
-  
-  left_join(aggregated_locs,by = join_by(project, location, collection)) |> 
+           str_detect(location, "WHA-", negate=T) &
+           str_detect(project, "Nocturnal", negate = T) ) |>
+
+  # left_join(aggregated_locs,by = join_by(project, location, collection)) |>
   filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T) &
-           (site_id_agg %in% test_locations$site_id_agg | event_id %in%
+           (site_id %in% test_locations$site_id | event_id %in%
               test_recordings$event_id) ) |>
   mutate(
-    test_group = ifelse(site_id_agg %in% test_locations$site_id_agg, "Spatial", "Site"),
+    test_group = ifelse(site_id %in% test_locations$site_id, "Spatial", "Site"),
     Time_period =dplyr::case_when(
       t2ss >= -60 & t2ss <= 150~"Dusk",
       t2sr >= -70 & t2sr <= 220 ~"Dawn",
@@ -34,32 +35,45 @@ recordings <-
                                         abs(t2sr))),
     doy = yday(date),
     Rec_length = factor(as.numeric(round(dur,1))),
-    recording_id = as.numeric(recording_id)) #|> 
+    recording_id = as.numeric(recording_id)) #|>
 
-# rm(test_training_data, train_locs)
-
+# # rm(test_training_data, train_locs)
+# 
 counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
-  replace_na(list(collection="WildTrax")) |> 
-  filter(event_id %in% recordings$event_id ) |> 
-  filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |> 
-  dplyr::select(event_id, location,  project, species_name_clean,total_count, 
-                species_code,
-                total_count_with_tmtt) |> 
+  dplyr::select(
+    event_id,
+    location,
+    project,
+    common_id,
+    species_name_clean,
+    total_count,
+    species_scientific_name,
+    species_code,
+    total_count_with_tmtt
+  ) |>
+  replace_na(list(collection="WildTrax")) |>
+  filter(event_id %in% recordings$event_id ) |>
+  filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |>
+  # dplyr::select(event_id, site_id,  project, 
+  #               species_name_clean,total_count,
+  #               common_id,
+  #               total_count_with_tmtt) |>
   mutate(y = ifelse(is.na(total_count_with_tmtt), total_count,
-                    total_count_with_tmtt)) |> 
+                    total_count_with_tmtt)) |>
   filter(!is.na(y))
 
 
 inla_tests <- function(spp){
+  spp_dir <- str_replace(spp, " ", "_")
   tictoc::tic(g('{spp}'))
   out_dir_spatial <- g(
-    "{INLA_output_loc_spatial}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
   )
   out_dir <- g(
-    "{INLA_output_loc}/{out_dir_app}/{spp}"
+    "{INLA_output_loc}/{out_dir_app}/{spp_dir}"
   )
   out_dir_tmp <- g(
-    "{INLA_output_loc_TMP}/{out_dir_app}/{spp}"
+    "{INLA_output_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
   
   list2env( prep_inla_data(spp, run_a2 = run_a2), envir = environment())
@@ -82,9 +96,9 @@ inla_tests <- function(spp){
   
   
   pca_cov_test <- (spatial_cov) |> 
-    filter(location %in% setup_dat$location) |> 
-    dplyr::select(location,where(~{!is.factor(.x) & !is.character(.x)}),
-                  -site_id_agg, -X, -Y) |> 
+    filter(site_id %in% setup_dat$site_id) |> 
+    dplyr::select(site_id,where(~{!is.factor(.x) & !is.character(.x)}),
+                   X, Y) |> 
     st_drop_geometry()
   
   # names(df_std)[names(df_std) %in% names(preds)]
@@ -94,7 +108,7 @@ inla_tests <- function(spp){
   
   pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) #|>
   pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) |> 
-    dplyr::select(-location)
+    dplyr::select(-site_id, -where(is.factor))
   
   
     # dplyr::select(-location)
@@ -119,21 +133,67 @@ inla_tests <- function(spp){
     p_vars <- pc_vars
   } else{p_vars <- "project"} 
   
+  site_map <- read_rds(
+  g("{out_dir_tmp}/site_map.rds")
+  ) |> dplyr::select(site_id, site)
   
   
   scaled_prediction <- 
-    setup_dat |> 
+    setup_dat %>%
+    {
+     if("on_er" %in% names(.)){.}else{
+     st_join(.,ontario_ez |> dplyr::select(on_er = ZONE_NAME)    )
+     }
+     } |> 
+    left_join(
+      select(
+        safe_dates_spp,
+        on_er,
+        start_doy,
+        end_doy
+      ),
+      by = join_by(on_er)
+    ) |> 
+    filter(doy >= start_doy & doy <= end_doy) |> 
+    dplyr::select(
+      Row,
+      y,
+      t2se,
+      doy,
+      RL=clip_length_min,
+      rec_id,
+      SiteN,
+      # location,
+      event_gr,
+      QPAD_offset,
+      year,
+      event_id,
+      X_sc,
+      Y_sc,
+      X,
+      Y,y,
+      on_er,
+      doy,
+      site_id,
+      year,
+      # sum_count_no_tmtt,
+      geometry,
+      test_group,
+      # es_f,
+      # all_of(included_continuous)
+    )  |> 
+    mutate(year = factor(year)) |> 
     left_join(pca_preds |> bind_cols(pls_preds),
-              by = join_by(location)) %>% 
-    dplyr::select( location, doy,Rec_length,test_group,
-                   event_gr,t2se,site_id_agg = site_id_agg.x,
-                   X, Y,offset,
+              by = join_by(site_id)) %>% 
+    dplyr::select( site_id, doy,RL,test_group,#Rec_length
+                   event_gr,t2se,site_id,doy,year,y,
+                   X, Y,on_er,#clip_length_min,#offset,
                   which(names(. )%in% p_vars)) %>%
     bind_cols(sd_mn |> 
                 filter(variable %in% names(.) & variable !="t2se") |> 
                 pivot_wider(names_from = variable,
                             values_from = c(sd2, mn))) |> 
-    mutate(across(c(doy, starts_with("PC|PLS")),
+    mutate(across(c(starts_with("PLS"),starts_with("PC"),doy),
            ~{(.x - get(glue::glue("mn_{cur_column()}")) )/
                 get(glue::glue("sd2_{cur_column()}") )}
            ) ) |> 
@@ -146,10 +206,13 @@ inla_tests <- function(spp){
                   -starts_with("mean_")) |> 
     mutate(X_sc = X/10000,
            Y_sc = Y/10000,
-           RL = Rec_length,
-           y = setup_dat$y,
-           site = factor(site_id_agg)) |> 
+           # RL = clip_length_min,
+           # y = setup_dat$y,
+           site = factor(site_id,
+                         levels = unique(levels(site_map$site), 
+                                         unique(setup_dat$site_id) )) ) |> 
     filter(event_gr %in% t2se_sd_mn$event_gr) 
+    
     
     
     
@@ -174,7 +237,7 @@ inla_tests <- function(spp){
  
   
   ff <- as.formula(
-    paste0("~o + ", ff_g)
+    paste0("~ ", ff_g)#o +
   )
   # nsamp <- 500
   gen_inla_test <- function(test_group_){
@@ -191,7 +254,7 @@ inla_tests <- function(spp){
     
   if(fam!="zeroinflatedpoisson1"){
   preds <- inlabru::generate(res, newdata=d_test,formula = ff,
-                             num.threads =32,
+                             # num.threads =32,
                              n.samples = nsamp) %>% exp() 
   d_pois <- map(1:nrow(d_test),~{dpois(d_test$y[[.x]], (preds[.x,]) 
   )}) %>%
@@ -207,25 +270,25 @@ inla_tests <- function(spp){
          )
   
   } else{
-    # if(str_detect(ff_g,"PC01|PLS01")){
+    # if(str_detect(ff_g,"PC01|PLS01")){ #expect_param <- lambda * exp(o)
     preds <- inlabru::generate(res, newdata=d_test,
                 as.formula(paste0("~{
                   scaling_prob <- (1 - zero_probability_parameter_for_zero_inflated_poisson_1)
                   lambda <- exp(",
                     ff_g,"
                   ) 
-                  expect_param <- lambda * exp(o)
-                  expect <- scaling_prob * expect_param
-                  variance <- scaling_prob * expect_param *
-                    (1 + (1 - scaling_prob) * expect_param)
+                 
+                  expect <- scaling_prob * lambda
+                  variance <- scaling_prob * lambda *
+                    (1 + (1 - scaling_prob) * lambda)
                   list(
                     lambda = lambda,
                     expect = expect,
                     variance = variance,
                     obs_prob = (1 - scaling_prob) * (y == 0) +
-                      scaling_prob * dpois(y, expect_param),
+                      scaling_prob * dpois(y, lambda),
                     prob_zero = (1 - scaling_prob) * (y == 0) +
-                      scaling_prob * dpois(0, expect_param)
+                      scaling_prob * dpois(0, lambda)
                   )
                   }")),
               num.threads =32,

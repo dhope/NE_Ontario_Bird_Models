@@ -6,286 +6,117 @@ library(patchwork)
 library(tictoc)
 
 library(DALEXtra)
-source("R/__globals.R")
-ggplot2::theme_set(ggplot2::theme_minimal(
-  base_size = 14,
-  base_family = "Roboto Condensed"
-))
-aoi <- read_rds(g("output/rds/{date_compiled}_Area_of_focus_mesh.rds"))
-# Load data ---------
+run_a2 <- FALSE
+g <- glue::glue
 
-spatial_cov <-
-  "output/rds/2025-10-28_spatial_covariates_data.rds" |>
-  read_rds() |>
-  mutate(d2O = read_rds("output/rds/2025-10-28_dist2ocean.rds")) |>
-  bind_cols(individual_locs) |> #Spatial_covariates_data_14March2024.rds") |>
-  distinct() |>
-  st_as_sf() %>%
-  bind_cols(as_tibble(st_coordinates(.))) |>
-  dplyr::select(where(~ sum(is.na(.x)) != length(.x))) |>
-  left_join(st_drop_geometry(aggregated_locs), by = join_by(site_id_agg))
-
-test_training_data <- read_rds(g(
-  "output/{date_compiled}_test_training_data.rds"
-))
-
-train_locs <- test_training_data$train_recordings |>
-  # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
-  st_as_sf() |>
-  dplyr::distinct(site_id_agg, geometry) |>
-  filter(!st_is_empty(geometry))
-
-
-recordings <- test_training_data$train_recordings |>
-  # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
-  filter(str_detect(
-    project,
-    "(Extraction)|(Nocturnal)|(Resample)",
-    negate = T
-  )) |>
-  mutate(
-    Time_period = dplyr::case_when(
-      t2ss >= -60 & t2ss <= 150 ~ "Dusk",
-      t2sr >= -70 & t2sr <= 220 ~ "Dawn",
-      t2ss > 150 & t2sr < -70 ~ "Night",
-      abs(t2sr) > 220 ~ "Day",
-      is.na(t2sr) ~ "Missing time or location data",
-      TRUE ~ "Unk"
-    ),
-    dur = round(clip_length_min, 2),
-    t2se = dplyr::case_when(
-      Time_period == "Dusk" ~ t2ss,
-      Time_period == "Dawn" ~ t2sr,
-      TRUE ~ pmin(abs(t2ss), abs(t2sr))
-    ),
-    doy = yday(date),
-    recording_id = as.numeric(recording_id)
-  ) #|>
-
-rm(test_training_data, train_locs)
-counts_full <- read_rds(g("{rds_data_loc}/counts.rds"))
-spp_list <- distinct(counts_full, species_name_clean, species_code) |>
-  filter(!is.na(species_code))
-
-counts <- counts_full |>
-  replace_na(list(collection = "WildTrax")) |>
-  filter(event_id %in% recordings$event_id) |>
-  filter(str_detect(
-    project,
-    "(Extraction)|(Nocturnal)|(Resample)",
-    negate = T
-  )) |>
-  dplyr::select(
-    event_id,
-    location,
-    project,
-    species_name_clean,
-    total_count,
-    species_code,
-    total_count_with_tmtt
-  ) |>
-  mutate(
-    y = ifelse(is.na(total_count_with_tmtt), total_count, total_count_with_tmtt)
-  ) |>
-  filter(!is.na(y))
-
-rm(counts_full)
-
-qpad_offsets <- read_rds("output/QPAD_global_offsets.rds") |>
-  rename(max_dist = r, time_minutes = t)
-na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
-  rename(species = spp)
-
-prep_brt_data <- function(spp) {
-  flush.console()
-
-  spp_name <- spp_list$species_name_clean[spp_list$species_code == spp]
-  # counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |>
-  # unique()
-  if (length(spp_name) != 1) {
-    rlang::abort("unable to identify species name")
-  }
-  safe_dates_spp <- filter(
-    safe_dates,
-    english_name == spp_name & biol_region %in% c(4, 5) & level == 2
-  ) |>
-    mutate(
-      on_er = case_when(
-        biol_region == 4 ~ "Ontario Shield",
-        biol_region == 5 ~ "Hudson Bay Lowlands",
-        TRUE ~ NA_character_
-      )
-    ) |>
-    summarize(
-      start_doy = min(start_dt_julian),
-      end_doy = max(end_dt_julian),
-      .by = c(on_er, level)
-    )
-
-  counts_spp <- filter(counts, species_name_clean == spp_name) |>
-    full_join(
-      recordings |> dplyr::select(-geometry),
-      by = join_by(event_id, location, project)
-    ) |>
-    replace_na(list(total_count_with_tmtt = 0, total_count = 0, y = 0))
-  # offfiles <-g("output/species_rds/offsets_{spp}.rds")
-  offsets_spp <- distinct(
-    recordings,
-    location,
-    event_id,
-    dur,
-    species_code = spp
-  ) |>
-    mutate(o = NA)#, dur = round(dur,2))
-
-  # if (spp %in% na_pops_offsets$species[!is.na(na_pops_offsets$o)]) {
-  #   
-  #   offsets_spp <- left_join(
-  #     offsets_spp |> dplyr::select(-o),
-  #     filter(na_pops_offsets, species == spp & max_dist == Inf),
-  #     by = join_by(species_code == species, dur == time_minutes)
-  #   )
-  # } else {
-  #   if (spp %in% qpad_offsets$species) {
-  #     # offsets_spp <- filter(qpad_offsets, species == spp)
-  #     offsets_spp <- left_join(
-  #       offsets_spp |> dplyr::select(-o),
-  #       filter(qpad_offsets, species == spp & max_dist == Inf),
-  #       by = join_by(species_code == species, dur == time_minutes)
-  #     )
-  #   }
-  # }
-
-  if (!"max_dist" %in% names(offsets_spp)) {
-    offsets_spp$max_dist <- Inf
-  }
-
-  out_dir_spatial <- g(
-    "{BRT_output_loc_spatial}/{spp}"
-  )
-  out_dir <- g(
-    "{BRT_output_loc}/{spp}"
-  )
-  dir.create(
-    out_dir_spatial,
-    recursive = T
-  )
-  dir.create(
-    out_dir,
-    recursive = T
-  )
-
-  setup_dat_0 <- counts_spp |>
-    left_join(
-      offsets_spp |>
-        dplyr::select(event_id, offset = o),
-      by = join_by(event_id)
-    ) |>
-    # filter(species_code==spp & str_detect(project, "Resample", negate=T) &
-    #          recording_id %in% train_locs$recording_id) |>
-    #
-    # left_join(recordings |>
-    #             dplyr::select(project:recording_id, date_time:t2se, dur),
-    #           by = join_by(project, project_id, location, recording_id)
-    # ) |>
-    mutate(Rec_length = dur) |> #factor(as.numeric(round(dur, 1)))) |>
-    mutate(
-      year = factor(year),
-      SiteN = as.numeric(factor(location)),
-      rec_id = as.numeric(as.factor(event_id)),
-      event_gr = factor(case_when(
-        is.na(date_time) ~ NA_character_,
-        Time_period %in% c("Dawn", "Dusk", "Night") ~ Time_period,
-        Time_period == "Day" & hour(date_time) <= 10 ~ "Dawn",
-        Time_period == "Day" & hour(date_time) > 10 ~ "Day",
-        TRUE ~ "Other"
-      ))
-    ) |>
-    arrange(location, doy, Time_period, t2se) |>
-    mutate(Row = row_number())
-
-  included_times <- setup_dat_0 |>
-    filter(y > 0) |>
-    janitor::tabyl(event_gr) |>
-    filter(n > 0)
-
-  if (nrow(included_times) == 0) {
-    included_times <- setup_dat_0 |> #filter(y>0) |>
-      janitor::tabyl(event_gr) |>
-      filter(n > 0 & !is.na(event_gr))
-  }
-
-  setup_dat_nested <-
-    setup_dat_0 |>
-    filter(event_gr %in% included_times$event_gr) |>
-    nest_by(event_gr)
-
-  rm(setup_dat_0)
-
-  setup_dat <-
-    setup_dat_nested |>
-    filter(event_gr != "Day") |>
-    unnest(data)
-
-  df_std <- setup_dat |>
-    st_drop_geometry() |>
-    ungroup() |>
-    dplyr::select(
-      -c(
-        project_id,
-        longitude,
-        latitude,
-        SiteN,
-        species_name_clean,
-        total_count,
-        total_count_with_tmtt,
-        species_code,
-        recording_id, #event_id,
-        tz,
-        t2sr,
-        t2ss,
-        SamplingEventIdentifier,
-        Time_period,
-        month,
-        day,
-        path,
-        site_id,
-        aru_id,
-        date_time,
-        date,
-        clip_length_min,
-        dur,
-        Row,
-        rec_id
-      )
-    ) %>%
-    mutate(random_val = rnorm(n = nrow(.))) |>
-    left_join(
-      spatial_cov |> st_drop_geometry(),
-      by = join_by(location, project, collection, site_id_agg)
-    ) |>
-    dplyr::select(-site_id_agg) |>
-    rename(QPAD_offset = offset) |>
-    left_join(
-      select(
-        safe_dates_spp,
-        on_er,
-        start_doy,
-        end_doy
-      ),
-      by = join_by(on_er)
-    ) |>
-    filter(doy >= start_doy & doy <= end_doy) |>
-    select(-start_doy, -end_doy, -on_er)
-
-  as.list.environment(environment())
+if(str_detect(osVersion, "Windows")){
+  source("R/__paths.R")
+} else{
+  source("R/__paths_linux.R")
 }
+
+# # Spatial covariates compiled in )3_Site_Data.R
+# spatial_cov <-
+#   "output/rds/2025-10-28_spatial_covariates_data.rds" |>
+#   read_rds() |>
+#   mutate(d2O = read_rds("output/rds/2025-10-28_dist2ocean.rds")) |>
+#   bind_cols(individual_locs) |> #Spatial_covariates_data_14March2024.rds") |>
+#   distinct() |>
+#   st_as_sf() %>%
+#   bind_cols(as_tibble(st_coordinates(.))) |>
+#   dplyr::select(where(~ sum(is.na(.x)) != length(.x))) |>
+#   left_join(st_drop_geometry(aggregated_locs), by = join_by(site_id_agg))
+# 
+# # Testing and training data compiled in 01_Withold_test_sites.R
+# test_training_data <- read_rds(g(
+#   "output/{date_compiled}_test_training_data.rds"
+# ))
+
+# # Pull out training locations
+# train_locs <- test_training_data$train_recordings |>
+#   # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
+#   st_as_sf() |>
+#   dplyr::distinct(site_id_agg, geometry) |>
+#   filter(!st_is_empty(geometry))
+
+# Pull out training locations from train locations
+# recordings <- test_training_data$train_recordings |>
+#   # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
+#   filter(str_detect(
+#     project,
+#     "(Extraction)|(Nocturnal)|(Resample)",
+#     negate = T
+#   )) |>
+#   # Assign recordings to day period
+#   mutate(
+#     Time_period = dplyr::case_when(
+#       t2ss >= -60 & t2ss <= 150 ~ "Dusk",
+#       t2sr >= -70 & t2sr <= 220 ~ "Dawn",
+#       t2ss > 150 & t2sr < -70 ~ "Night",
+#       abs(t2sr) > 220 ~ "Day",
+#       is.na(t2sr) ~ "Missing time or location data",
+#       TRUE ~ "Unk"
+#     ),
+#     dur = round(clip_length_min, 2),
+#     # t2se is the time to either the sunrise or sunset depending on time period
+#     t2se = dplyr::case_when(
+#       Time_period == "Dusk" ~ t2ss,
+#       Time_period == "Dawn" ~ t2sr,
+#       TRUE ~ pmin(abs(t2ss), abs(t2sr))
+#     ),
+#     doy = yday(date),
+#     recording_id = as.numeric(recording_id)
+#   ) #|>
+
+# rm(test_training_data, train_locs)
+
+# # Load in prepared count data
+# counts_full <- read_rds(g("{rds_data_loc}/counts.rds"))
+# spp_list <- distinct(counts_full, species_name_clean, species_code) |>
+#   filter(!is.na(species_code))
+
+# Clean count data for the analysis and drop testing data
+# counts <- counts_full |>
+#   replace_na(list(collection = "WildTrax")) |>
+#   filter(event_id %in% recordings$event_id) |>
+#   filter(str_detect(
+#     project,
+#     "(Extraction)|(Nocturnal)|(Resample)",
+#     negate = T
+#   )) |>
+#   dplyr::select(
+#     event_id,
+#     location,
+#     project,
+#     species_name_clean,
+#     total_count,
+#     species_code,
+#     total_count_with_tmtt
+#   ) |>
+#   mutate(
+#     y = ifelse(is.na(total_count_with_tmtt), total_count, total_count_with_tmtt)
+#   ) |>
+#   filter(!is.na(y))
+
+# rm(counts_full)
+# 
+# qpad_offsets <- read_rds("output/QPAD_global_offsets.rds") |>
+#   rename(max_dist = r, time_minutes = t)
+# na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
+#   rename(species = spp)
+
 
 
 run_brt <- function(spp) {
+  spp_dir <- str_replace_all(spp, ' ', '_')
+  out_dir_spatial <- g(
+    "{BRT_output_loc_spatial}/{spp_dir}"
+  )
+  out_dir <- g(
+    "{BRT_output_loc}/{spp_dir}"
+  )
   gc()
-
-  list2env(prep_brt_data(spp), environment())
+df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
 
   cat(glue::glue("Starting Model runs for {spp}\n"))
   no_off <- all(is.na(df_std$QPAD_offset))
@@ -325,7 +156,7 @@ run_brt <- function(spp) {
         ) |>
           set_engine(
             "xgboost",
-            tree_method = "hist", # nthread=32,
+            # tree_method = "hist", # nthread=32,
             objective = 'count:poisson'
           )
       }
@@ -412,10 +243,10 @@ run_brt <- function(spp) {
       threshold = 0.95
     )
 
-  tic("Prep")
-  df_prepped <- prep(xgb_rec) |> bake(new_data = NULL) |> dplyr::select(-y)
-
-  toc()
+  # tic("Prep")
+  # df_prepped <- prep(xgb_rec) |> bake(new_data = NULL) |> dplyr::select(-y)
+  # 
+  # toc()
   if (no_off) {
     xgb_wf <- xgb_rec |>
       workflow() %>%
@@ -434,7 +265,7 @@ run_brt <- function(spp) {
     loss_reduction(),
     sample_size = sample_prop(),
     # finalize(mtry(), df_prepped),
-    learn_rate = learn_rate(range = c(-5, -0.5)),
+    learn_rate = learn_rate(range = c(-10, -1)),
     # stop_iter(range = c(1, 500)),
     size = 30
   )
@@ -447,9 +278,9 @@ run_brt <- function(spp) {
     extract_parameter_set_dials() %>%
     # update(mtry = finalize(mtry(), df_prepped)) |>
     update(sample_size = sample_prop())
-  library(future)
-  options(future.globals.maxSize = 8000 * 1024^2)
-  plan(multisession, workers = 32)
+  # library(future)
+  # # options(future.globals.maxSize = 8000 * 1024^2)
+  # plan(multicore, workers = 32)
 
   tic("Tune grid")
   xgb_res <- tune_grid(
@@ -472,8 +303,8 @@ run_brt <- function(spp) {
   )
   toc()
 
-  plan(sequential)
-  plan(multisession, workers = 10)
+  # plan(sequential)
+  # plan(multisession, workers = 10)
   tic("Tune bayes")
   xgb_bayes <- tune_bayes(
     xgb_wf,
@@ -491,7 +322,7 @@ run_brt <- function(spp) {
     )
   )
   toc()
-  plan(sequential)
+  # plan(sequential)
   show_notes(.Last.tune.result)
   cat(glue::glue("Grid tune finished for {spp}\n"))
   metrics <- xgb_bayes %>%
@@ -530,7 +361,7 @@ run_brt <- function(spp) {
     fit_workflow,
     file = glue::glue("{bundle_locs}/{spp}_time_bundle.rds")
   )
-
+  # plan(sequential)
   cat(glue::glue("Final model fit for {spp}\n"))
 
  
@@ -662,9 +493,9 @@ run_brt <- function(spp) {
   #     glue::glue("{bundle_locs}/{spp}_time_bundle.rds")
   #   )
 
-  
-  library(future)
-  plan(multisession, workers = 32)
+  # 
+  # library(future)
+  # plan(multisession, workers = 32)
   p <- predict(
     fit_workflow,
     new_data = preds |>
@@ -679,6 +510,7 @@ run_brt <- function(spp) {
         type = NA,
         Rec_length = (5),
         SiteN = NA,
+        site_id =NA,
         longitude = NA,
         latitude = NA,
         event_id = NA,
@@ -691,7 +523,7 @@ run_brt <- function(spp) {
   )
   toc()
 
-  plan(sequential)
+  # plan(sequential)
   write_rds(p, glue::glue("{prediction_layer_loc}/{spp}_time_pred_brt.rds"))
   r_pred <- rast(g("{prediction_layer_loc}/2025-10-21_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
   pobs <- 1 - dpois(0, lambda = p$.pred)
@@ -738,7 +570,7 @@ run_brt <- function(spp) {
   #        colour = "#\nNon-zero\ncounts") +
   #   geom_sf(data = quat_loc, fill = NA, colour = 'white')
   # dev.off()
-  blob <- read_sf("E:/SPATIAL/RA_Blob/MiningClaimsRoF_July2025.shp") |>
+  blob <- read_sf(blob_loc) |>
     st_transform(ont.proj)
   # map_plot <- ggplot() +
   #   tidyterra::geom_spatraster(data = predicted_raster, maxcell = 2e6) +
@@ -755,7 +587,7 @@ run_brt <- function(spp) {
   #   geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
   #   geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
 
-  can <- st_read("E:/CWS_ONT_local/Base_Data/canada.shp") %>%
+  can <- st_read(canada_shp_loc) %>%
     # filter(NAME %in% c("Manitoba", "Québec", )) |>
     st_transform(ont.proj, partial = F, check = T)
 

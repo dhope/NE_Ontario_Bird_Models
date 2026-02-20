@@ -1,4 +1,5 @@
 source("R/__globals.R")
+full_locs <- locs
 locs <- individual_locs
 locs_atlas2 <-
   g("{rds_data_loc}/locations.rds") |>
@@ -194,7 +195,7 @@ get_non_lc <- function(r, dist_, f = 'mean',ii=NULL) {
       } else {
         n <- str_extract(
           .x,
-          "((?<=DataLayers/\\d{1,2}_)[\\w,\\W]+/\\w+(?=_(orig|rec)30m))"
+          "((?<=DataLayers/{1,2}\\d{1,2}_)[\\w,\\W]+/\\w+(?=_(orig|rec)30m))"
         ) |>
           str_replace("/", "_")
       }
@@ -230,7 +231,7 @@ non_lc_r_min_500 <- get_non_lc(non_mean, 500, f = 'min')
 # dem_pslp # perspective (direction)
 
 road_comb <- read_sf(
-  "D:/DELIVERABLES/Spatialworks24_25/DataLayers/16_Roads/Combined_Roads.shp"
+ road_layr_loc
 ) |>
   st_zm()
 int_100 <- st_intersects(st_buffer(locs, 100), road_comb, sparse = F) |>
@@ -318,3 +319,4 @@ if (!run_a2) {
     list_c() |>
     write_rds(g("output/rds/{Sys.Date()}_dist2ocean_a2.rds"))
 }
+

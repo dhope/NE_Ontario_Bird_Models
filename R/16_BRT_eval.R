@@ -6,6 +6,7 @@ if (!use_training_data) {
   ))
   test_locations <- test_training_data$test_locations
   test_recordings <- test_training_data$test_recordings
+  train_ids <- test_training_data$train_recordings$event_id 
   rm(
     test_training_data,
     mesh_il,
@@ -18,84 +19,144 @@ if (!use_training_data) {
     run_brt,
     run_brt_preds
   )
-
   recordings <-
     g("{rds_data_loc}/all_events.rds") |>
     read_rds() |>
-    filter(location %in% aggregated_locs$location) |>
-    filter(
-      collection %in%
-        c("WildTrax", "ONATLAS3PC") &
-        str_detect(location, "WHA-", negate = T) &
-        str_detect(project, "Nocturnal", negate = T)
-    ) |>
-
-    left_join(aggregated_locs, by = join_by(project, location, collection)) |>
-    filter(
-      str_detect(project, "(Extraction)|(Nocturnal)|(Resample)", negate = T) &
-        (site_id_agg %in%
-          test_locations$site_id_agg |
-          event_id %in%
-            test_recordings$event_id)
-    ) |>
+    filter(!event_id %in% train_ids) |>
+    filter(collection %in% c("WildTrax", "ONATLAS3PC") &
+             str_detect(location, "WHA-", negate=T) &
+             str_detect(project, "Nocturnal", negate = T) ) |>
+    
+    # left_join(aggregated_locs,by = join_by(project, location, collection)) |>
+    filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T) &
+             (site_id %in% test_locations$site_id | event_id %in%
+                test_recordings$event_id) ) |>
+    
     mutate(
-      test_group = ifelse(
-        site_id_agg %in% test_locations$site_id_agg,
-        "Spatial",
-        "Site"
-      ),
-      Time_period = dplyr::case_when(
-        t2ss >= -60 & t2ss <= 150 ~ "Dusk",
-        t2sr >= -70 & t2sr <= 220 ~ "Dawn",
+      test_group = ifelse(site_id %in% test_locations$site_id, "Spatial", "Site"),
+      Time_period =dplyr::case_when(
+        t2ss >= -60 & t2ss <= 150~"Dusk",
+        t2sr >= -70 & t2sr <= 220 ~"Dawn",
         t2ss > 150 & t2sr < -70 ~ "Night",
-        abs(t2sr) > 220 ~ "Day",
+        abs(t2sr)>220 ~ "Day" ,
         is.na(t2sr) ~ "Missing time or location data",
-        TRUE ~ "Unk"
-      ),
+        TRUE~"Unk" ),
       dur = round(clip_length_min, 2),
-      t2se = dplyr::case_when(
-        Time_period == "Dusk" ~ t2ss,
-        Time_period == "Dawn" ~ t2sr,
-        TRUE ~ pmin(abs(t2ss), abs(t2sr))
-      ),
+      t2se = dplyr::case_when(Time_period=="Dusk"~t2ss,
+                              Time_period == "Dawn"~t2sr,
+                              TRUE ~ pmin(abs(t2ss),
+                                          abs(t2sr))),
       doy = yday(date),
-      recording_id = as.numeric(recording_id)
-    ) #|>
-
-  # rm(test_training_data, train_locs)
-
+      Rec_length = factor(as.numeric(round(dur,1))),
+      recording_id = as.numeric(recording_id)) %>%
+  left_join(.,
+  individual_locs |> filter(site_id %in% .$site_id) |> 
+    st_join(ontario_ez |> dplyr::select(on_er = ZONE_NAME)    ) ,
+  by = join_by(site_id))
+  
+  # # rm(test_training_data, train_locs)
+  # 
   counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
-    replace_na(list(collection = "WildTrax")) |>
-    filter(event_id %in% recordings$event_id) |>
-    filter(str_detect(
-      project,
-      "(Extraction)|(Nocturnal)|(Resample)",
-      negate = T
-    )) |>
     dplyr::select(
       event_id,
       location,
       project,
+      common_id,
       species_name_clean,
       total_count,
+      species_scientific_name,
       species_code,
       total_count_with_tmtt
     ) |>
-    mutate(
-      y = ifelse(
-        is.na(total_count_with_tmtt),
-        total_count,
-        total_count_with_tmtt
-      )
-    ) |>
+    replace_na(list(collection="WildTrax")) |>
+    filter(event_id %in% recordings$event_id ) |>
+    filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |>
+    # dplyr::select(event_id, site_id,  project, 
+    #               species_name_clean,total_count,
+    #               common_id,
+    #               total_count_with_tmtt) |>
+    mutate(y = ifelse(is.na(total_count_with_tmtt), total_count,
+                      total_count_with_tmtt)) |>
     filter(!is.na(y))
+  # 
+  # recordings <-
+  #   g("{rds_data_loc}/all_events.rds") |>
+  #   read_rds() |>
+  #   # filter(location %in% aggregated_locs$location) |>
+  #   filter(
+  #     collection %in%
+  #       c("WildTrax", "ONATLAS3PC") &
+  #       str_detect(location, "WHA-", negate = T) &
+  #       str_detect(project, "Nocturnal", negate = T)
+  #   ) |>
+  # 
+  #   # left_join(aggregated_locs, by = join_by(project, location, collection)) |>
+  #   filter(
+  #     str_detect(project, "(Extraction)|(Nocturnal)|(Resample)", negate = T) &
+  #       (site_id %in%
+  #         test_locations$site_id |
+  #         event_id %in%
+  #           test_recordings$event_id)
+  #   ) |>
+  #   mutate(
+  #     test_group = ifelse(
+  #       site_id %in% test_locations$site_id,
+  #       "Spatial",
+  #       "Site"
+  #     ),
+  #     Time_period = dplyr::case_when(
+  #       t2ss >= -60 & t2ss <= 150 ~ "Dusk",
+  #       t2sr >= -70 & t2sr <= 220 ~ "Dawn",
+  #       t2ss > 150 & t2sr < -70 ~ "Night",
+  #       abs(t2sr) > 220 ~ "Day",
+  #       is.na(t2sr) ~ "Missing time or location data",
+  #       TRUE ~ "Unk"
+  #     ),
+  #     dur = round(clip_length_min, 2),
+  #     t2se = dplyr::case_when(
+  #       Time_period == "Dusk" ~ t2ss,
+  #       Time_period == "Dawn" ~ t2sr,
+  #       TRUE ~ pmin(abs(t2ss), abs(t2sr))
+  #     ),
+  #     doy = yday(date),
+  #     recording_id = as.numeric(recording_id)
+  #   ) #|>
+  # 
+  # # rm(test_training_data, train_locs)
+  # 
+  # counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+  #   replace_na(list(collection = "WildTrax")) |>
+  #   filter(event_id %in% recordings$event_id) |>
+  #   filter(str_detect(
+  #     project,
+  #     "(Extraction)|(Nocturnal)|(Resample)",
+  #     negate = T
+  #   )) |>
+  #   dplyr::select(
+  #     event_id,
+  #     location,
+  #     project,
+  #     species_name_clean,
+  #     total_count,
+  #     common_id,
+  #     total_count_with_tmtt
+  #   ) |>
+  #   mutate(
+  #     y = ifelse(
+  #       is.na(total_count_with_tmtt),
+  #       total_count,
+  #       total_count_with_tmtt
+  #     )
+  #   ) |>
+  #   filter(!is.na(y))
 }
 test_out_of_sample <- function(spp, write_to_file) {
+  spp_dir <- str_replace(spp, " ", "_")
   out_dir_spatial <- g(
-    "{BRT_output_loc_spatial}/{spp}"
+    "{BRT_output_loc_spatial}/{spp_dir}"
   )
   out_dir <- g(
-    "{BRT_output_loc}/{spp}"
+    "{BRT_output_loc}/{spp_dir}"
   )
   # tic("Run predictions")
 
@@ -104,7 +165,7 @@ test_out_of_sample <- function(spp, write_to_file) {
     df_std$test_group <- "Train"
   }
 
-  fit_workflow <- read_rds(glue::glue("{bundle_locs}/{spp}_time_bundle.rds")) #)
+  fit_workflow <- readRDS(glue::glue("{bundle_locs}/{spp}_time_bundle.rds")) #)
   # bundle::unbundle(
 
   gen_tests <- function(test_group_) {

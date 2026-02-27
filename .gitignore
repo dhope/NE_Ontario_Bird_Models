@@ -58,3 +58,10 @@ output/
 
 # Model_Outputs book
 Model_Outputs/
+
+
+# PDFs aren't needed in the repo
+*.pdf
+
+# ignore rds files as they're too heavy man
+*.rds

@@ -50,6 +50,7 @@ rsconnect/
 
 
 R/__paths.R
+R/__paths_linux.R
 
 
 # output folder

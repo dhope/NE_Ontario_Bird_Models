@@ -7,7 +7,7 @@ library(terra)
 library(fmesher)
 ont.proj <- 3161
 g <- glue::glue
-date_compiled <- "2026-02-16"#"2026-01-30"#2025-10-28" #"2025-09-10" #"2025-02-28"
+
 
 if(str_detect(osVersion, "Windows")){
   source("R/__paths.R")

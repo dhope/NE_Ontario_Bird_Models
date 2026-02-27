@@ -4,6 +4,9 @@ library(tidymodels)
 library(offsetreg)
 library(patchwork)
 library(tictoc)
+library(terra)
+library(future)
+options(future.globals.maxSize = 8000 * 1024^2)
 
 library(DALEXtra)
 run_a2 <- FALSE
@@ -14,6 +17,10 @@ if(str_detect(osVersion, "Windows")){
 } else{
   source("R/__paths_linux.R")
 }
+
+
+
+
 
 # # Spatial covariates compiled in )3_Site_Data.R
 # spatial_cov <-
@@ -108,15 +115,47 @@ if(str_detect(osVersion, "Windows")){
 
 
 run_brt <- function(spp) {
-  spp_dir <- str_replace_all(spp, ' ', '_')
+  spp_dir <- str_replace_all(spp, ' ', '_') |> str_remove_all("\\'")
   out_dir_spatial <- g(
     "{BRT_output_loc_spatial}/{spp_dir}"
   )
   out_dir <- g(
     "{BRT_output_loc}/{spp_dir}"
   )
+  print(out_dir_spatial)
+  print(out_dir)
+  dir.create(out_dir_spatial)
+  dir.create(out_dir)
   gc()
-df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
+  model_rds_file <- glue::glue("{bundle_locs}/{spp_dir}_time_bundle.rds")
+  model_rds_file_old <- glue::glue("{bundle_locs}/{spp}_time_bundle.rds")
+  dat_file <- g("{brt_spp_dat_loc}/{spp_dir}.rds")
+  if(!file.exists(dat_file)){
+    dat_file <- g("{brt_spp_dat_loc}/{spp}.rds")
+  }
+  if(!file.exists(dat_file)){
+    dat_file <- g("{brt_spp_dat_loc}/{str_replace_all(spp, ' ', '_') }.rds")
+  }
+  
+  df_std <- read_rds(dat_file)
+n_sites <- df_std |> filter(y>0) |> pull(site_id) |> n_distinct()
+  if(n_sites<=20){
+    cat(glue::glue("Insufficient data, skipping {spp}\n\r"))
+    file.create(glue::glue("{out_dir}/skipped_due_insufficient_data.txt"))
+    
+    return(NULL)}
+if(file.exists(model_rds_file)||file.exists(model_rds_file_old)){
+  cat(glue::glue("Model rds already exists, skipping {spp}\n\r"))
+  file.create(glue::glue("{out_dir}/skipped_due_to_existing_rds.txt"))
+  return(NULL)
+}
+
+plan(sequential)
+if(str_detect(osVersion, "Windows")){
+  plan(multisession, workers = 32, gc=T)
+} else{
+  plan(multicore, workers = 32, gc=T)
+}
 
   cat(glue::glue("Starting Model runs for {spp}\n"))
   no_off <- all(is.na(df_std$QPAD_offset))
@@ -156,8 +195,9 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
         ) |>
           set_engine(
             "xgboost",
-            # tree_method = "hist", # nthread=32,
-            objective = 'count:poisson'
+            tree_method = "hist", # nthread=32,
+            objective = 'count:poisson'#,
+            # nthreads=2
           )
       }
     } %>%
@@ -181,6 +221,8 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
 
     step_rm(
       contains("location"),
+      contains("species_name_clean"),
+      contains("site_id"),
       contains("project"),
       contains("total"),
       contains("d2s"),
@@ -188,7 +230,8 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
       contains("event_id"),
       contains("collection"),
       contains("OHN_swatd_500"),
-      contains("dem_asp8")
+      contains("dem_asp8"),
+      contains("source_file_name")
     ) |> #,X,Y ) |>
     step_mutate(NFIS_is_forest_100 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
                 NFIS_is_forest_500 = #across(contains("NFIS_age_500"),
@@ -271,7 +314,12 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   )
 
   withr::with_seed(123, {
-    vb_folds <- vfold_cv(df_std)
+    # vb_folds <- vfold_cv(df_std)
+    vb_folds <- spatialsample::spatial_buffer_vfold_cv(
+      df_std |> st_as_sf(coords = c("X", "Y"), crs = ont.proj,remove=F ),
+      radius = 1000, buffer =NULL,# pool = 0.8
+    )
+   
   })
   xgb_param <-
     xgb_wf %>%
@@ -281,7 +329,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   # library(future)
   # # options(future.globals.maxSize = 8000 * 1024^2)
   # plan(multicore, workers = 32)
-
+  cat("Starting grid tune\n")
   tic("Tune grid")
   xgb_res <- tune_grid(
     xgb_wf,
@@ -297,8 +345,10 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
       rsq
     ), #$,
     control = control_grid(
-      verbose = F, #verbose_elim = T,
-      parallel_over = 'everything'
+      verbose = F, 
+      pkgs = c(tidymodels_packages(), "xgboost"),
+        #verbose_elim = T,
+      parallel_over = 'everything',
     )
   )
   toc()
@@ -314,7 +364,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     initial = xgb_res,
     iter = 70,
     control = control_bayes(
-      parallel_over = 'resamples',
+      parallel_over = 'everything',
       allow_par = T,
       seed = 3135,
       uncertain = 8,
@@ -328,7 +378,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   metrics <- xgb_bayes %>%
     collect_metrics()
 
-  write_csv(metrics, g("{out_dir}/{spp}_time_metrics.csv"))
+  write_csv(metrics, g("{out_dir}/{spp_dir}_time_metrics.csv"))
 
   best_rmse <- select_best(xgb_bayes, metric = "poisson_log_loss")
 
@@ -359,7 +409,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   # extract_fit_engine(fit_workflow) |> collect_metrics()
   saveRDS(
     fit_workflow,
-    file = glue::glue("{bundle_locs}/{spp}_time_bundle.rds")
+    file = model_rds_file
   )
   # plan(sequential)
   cat(glue::glue("Final model fit for {spp}\n"))
@@ -398,13 +448,13 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     )
 
     vi_tbl <- vip::vi(fit_workflow)
-    write_csv(vi_tbl, g("{out_dir}/{spp}_time_vi.csv"))
+    write_csv(vi_tbl, g("{out_dir}/{spp_dir}_time_vi.csv"))
 
     vip_plot <- vip::vip(fit_workflow, geom = "point", n = 15)
 
     ggsave(
       plot = vip_plot,
-      filename = g("{out_dir}/{spp}_time_vi.jpeg"),
+      filename = g("{out_dir}/{spp_dir}_time_vi.jpeg"),
       width = 8,
       height = 6
     )
@@ -419,7 +469,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     preds_org <- predict(fit_workflow, new_data = df_std) |> bind_cols(df_std)
     toc()
     # collect_metrics(fit_workflow)
-    write_rds(preds_org, g("{out_dir}/{spp}_time_model_pred.rds"))
+    write_rds(preds_org, g("{out_dir}/{spp_dir}_time_model_pred.rds"))
 
     vars_ <- vi_tbl |> slice_head(n = 15) |> pull(Variable)
 
@@ -431,7 +481,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     pdp <- plot(pd)
     ggsave(
       pdp,
-      filename = g("{out_dir}/{spp}_time_pdp.jpeg"),
+      filename = g("{out_dir}/{spp_dir}_time_pdp.jpeg"),
       width = 12,
       height = 12
     )
@@ -445,7 +495,7 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     resid_plt <- p1 + p2
     ggsave(
       plot = resid_plt,
-      g("{out_dir}/{spp}_time_resid.jpeg"),
+      g("{out_dir}/{spp_dir}_time_resid.jpeg"),
       width = 10,
       height = 6
     )
@@ -496,6 +546,8 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   # 
   # library(future)
   # plan(multisession, workers = 32)
+  # plan(sequential)
+  
   p <- predict(
     fit_workflow,
     new_data = preds |>
@@ -518,14 +570,17 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
         olcb_99_100 = NA,
         total_100 = NA,
         olcb_99_500 = NA,
-        total_500 = NA
+        total_500 = NA,
+        species_name_clean = spp,
+        source_file_name=NA
       )
   )
   toc()
 
   # plan(sequential)
-  write_rds(p, glue::glue("{prediction_layer_loc}/{spp}_time_pred_brt.rds"))
+  write_rds(p, glue::glue("{prediction_layer_loc}/{spp_dir}_time_pred_brt.rds"))
   r_pred <- rast(g("{prediction_layer_loc}/2025-10-21_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
+  aoi <- read_rds(g("output/rds/{date_compiled}_Area_of_focus_mesh.rds"))
   pobs <- 1 - dpois(0, lambda = p$.pred)
   r_pobs <- predicted_raster <- rast(r_pred[[1]])
   r2 <- terra::cellFromXY(predicted_raster, preds[, c("X", "Y")])
@@ -537,25 +592,25 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
 
   terra::writeRaster(
     predicted_raster,
-    glue::glue("{out_dir_spatial}/{spp}_time_brt.tif"),
+    glue::glue("{out_dir_spatial}/{spp_dir}_time_brt.tif"),
     overwrite = T
   )
   terra::writeRaster(
     r_pobs,
-    glue::glue("{out_dir_spatial}/{spp}_pobs_time_brt.tif"),
+    glue::glue("{out_dir_spatial}/{spp_dir}_pobs_time_brt.tif"),
     overwrite = T
   )
   
   min_q <- min(p, na.rm = T)
-
-  mf_route <- read_sf(
-    g("{mf_route_loc}/MFCAR_Route.shp")
-  )
-
-  mf_r <- crop(
-    predicted_raster,
-    st_bbox(st_transform(st_buffer(mf_route, 20000), st_crs(predicted_raster)))
-  )
+  # 
+  # mf_route <- read_sf(
+  #   g("{mf_route_loc}/MFCAR_Route.shp")
+  # )
+  # 
+  # mf_r <- crop(
+  #   predicted_raster,
+  #   st_bbox(st_transform(st_buffer(mf_route, 20000), st_crs(predicted_raster)))
+  # )
   # quat_loc <- st_crop(quat, st_bbox(st_transform(st_buffer(mf_route, 20000), st_crs(predicted_raster))))
 
   # cairo_pdf(g("{out_dir}/{spp}_time_map_MFCAR.pdf"), fallback_resolution = 300, height = 17, width = 11)
@@ -572,6 +627,12 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   # dev.off()
   blob <- read_sf(blob_loc) |>
     st_transform(ont.proj)
+  ra_area_official <- read_sf(
+    ra_approx_area_loc
+  ) |>
+    st_transform(ont.proj)
+  
+  
   # map_plot <- ggplot() +
   #   tidyterra::geom_spatraster(data = predicted_raster, maxcell = 2e6) +
   #   labs(fill = "individuals/ha", title = spp, colour = "#\nNon-zero\ncounts") +
@@ -586,25 +647,25 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
   #   # geom_sf(data = locs_in) +
   #   geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
   #   geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black')
+  # 
+  # can <- st_read(canada_shp_loc) %>%
+  #   # filter(NAME %in% c("Manitoba", "Québec", )) |>
+  #   st_transform(ont.proj, partial = F, check = T)
 
-  can <- st_read(canada_shp_loc) %>%
-    # filter(NAME %in% c("Manitoba", "Québec", )) |>
-    st_transform(ont.proj, partial = F, check = T)
-
-  inset <- ggplot() +
-    geom_sf(data = can, fill = NA) +
-    geom_sf(
-      data = ra_area_official,
-      fill = tidyterra::wiki.colors(1),
-      alpha = 0.8
-    ) +
-    ggthemes::theme_map()
+  # inset <- ggplot() +
+  #   geom_sf(data = can, fill = NA) +
+  #   geom_sf(
+  #     data = ra_area_official,
+  #     fill = tidyterra::wiki.colors(1),
+  #     alpha = 0.8
+  #   ) +
+  #   ggthemes::theme_map()
 
   map_plot <-
     ggplot() +
     tidyterra::geom_spatraster(
-      data = mask(predicted_raster, ra_area),
-      maxcell = 1e6
+      data = mask(predicted_raster, ra_area_official),
+      maxcell = 2e6
     ) +
     labs(
       fill = "individuals/ha",
@@ -651,27 +712,27 @@ df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     geom_sf(data = BASSr::ontario, fill = NA) +
     # geom_sf(data = napken_lake, shape =2 )+
     # geom_sf(data = locs_in) +
-    geom_sf(data = ra_area, fill = NA, linetype = 2, colour = 'white') +
+    geom_sf(data = ra_area_official, fill = NA, linetype = 2, colour = 'white') +
     # geom_sf(data = mesh_data, fill = NA, linetype = 3, colour = 'black') +
     coord_sf(
-      xlim = st_bbox(ra_buffer)[c(1, 3)],
-      ylim = st_bbox(ra_buffer)[c(2, 4)]
+      xlim = st_bbox(ra_area_official)[c(1, 3)],
+      ylim = st_bbox(ra_area_official)[c(2, 4)]
     )
 
   ggsave(
     plot = map_plot,
-    g("{out_dir}/{spp}_time_map_{period_to_use}_{doy_used}.jpeg"),
+    g("{out_dir}/{spp_dir}_time_map_{period_to_use}_{doy_used}.jpeg"),
     width = 6.73,
     height = 8.5
   )
   ggsave(
     plot = p_obs_plot,
-    g("{out_dir}/{spp}_time_map_pobs_{period_to_use}_{doy_used}.jpeg"),
+    g("{out_dir}/{spp_dir}_time_map_pobs_{period_to_use}_{doy_used}.jpeg"),
     width = 6.73,
     height = 8.5
   )
   # hist(p[[1]][p[[1]]<0.004], breaks = 100)
   # hasValues(predicted_raster)
-
+  plan(sequential)
   cat(glue::glue("Predictions complete for {spp}\n"))
 }

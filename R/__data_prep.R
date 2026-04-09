@@ -1,19 +1,83 @@
 ## To prepare data in a standard way between INLA and BRTs
 ## Used in 06_BRT_time.R & 08_INLA_SPDE.R 
 
+
+if(!exists("run_INLA")){
+  run_INLA <- FALSE
+  rlang::warn("Setting run_INLA to false. Set to TRUE if this is incorrect")
+}
+if(run_INLA){
+  if (run_a2) {
+    spp_cov_date <-"2026-03-10"# "2026-02-04"#"2025-10-28"
+    spp_cov_file <- g("output/rds/{spp_cov_date}_spatial_covariates_Atlas2.rds")
+    individual_locs <-
+      g("{rds_data_loc}/locations.rds") |>
+      read_rds() |>
+      filter(
+        collection %in%
+          c("OBBA2PC") &
+          str_detect(project, "Nocturnal|Resample", negate = T)
+      ) |>
+      st_filter(ra_buffer) |> 
+      st_join(ontario_ez)
+    # aggregated_locs <- dplyr::select(individual_locs, site_id) |> 
+    #   st_join( select(ontario_ez, on_er = ZONE_NAME))
+    
+    raw_recordings <- g("{rds_data_loc}/all_events.rds") |>
+      read_rds() |>
+      filter(
+        collection %in% c("OBBA2PC") & location %in% individual_locs$location
+      ) |>
+      mutate(date = ymd(glue::glue("{year}-{month}-{day}")), doy = yday(date))
+    raw_counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+      replace_na(list(collection = "WildTrax")) |>
+      filter(event_id %in% raw_recordings$event_id) |>
+      filter(str_detect(
+        project,
+        "(Extraction)|(Nocturnal)|(Resample)",
+        negate = T
+      ))
+    out_dir_app <- "A2"
+  } else {
+    spp_cov_date <- "2026-02-16"#"2025-10-28"
+    spp_cov_file <- g("output/rds/{spp_cov_date}_spatial_covariates_data.rds") 
+    # raw_recordings <- test_training_data$train_recordings |>
+    #   left_join(aggregated_locs, by = join_by(project, location, collection)) |>
+    #   filter(str_detect(
+    #     project,
+    #     "(Extraction)|(Nocturnal)|(Resample)",
+    #     negate = T
+    #   ))
+    
+    # raw_counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+    #   replace_na(list(collection = "WildTrax")) |>
+    #   filter(event_id %in% raw_recordings$event_id) |>
+    #   filter(str_detect(
+    #     project,
+    #     "(Extraction)|(Nocturnal)|(Resample)",
+    #     negate = T
+    #   ))
+    out_dir_app <- ""
+  }
+}
+
+
 # Spatial covariates compiled in )3_Site_Data.R
 spatial_cov <-
   spp_cov_file |>
   read_rds() %>%  {
     if (!run_a2) {
-      mutate(., d2O = read_rds(g("output/rds/{spp_cov_date}_dist2ocean.rds")))
+      mutate(., d2O = read_rds(g("output/rds/{spp_cov_date}_dist2ocean.rds"))) |> 
+        bind_cols(dplyr::select(
+          individual_locs,
+          site_id, geometry))  #Spatial_covariates_data_14March2024.rds") |>
     } else {
-      mutate(., d2O = read_rds(g("output/rds/{spp_cov_date}_dist2ocean_a2.rds")))
-    }
+      mutate(., d2O = read_rds(g("output/rds/{spp_cov_date}_dist2ocean_a2.rds"))) |> 
+        left_join(dplyr::select(
+          individual_locs,
+          site_id, geometry), by = join_by(site_id))     }
   } |>
-  bind_cols(dplyr::select(
-  individual_locs,
-  site_id, geometry)) |> #Spatial_covariates_data_14March2024.rds") |>
+ 
   distinct() |>
   st_as_sf() %>%
   bind_cols(as_tibble(st_coordinates(.))) |>
@@ -36,7 +100,7 @@ raw_recordings <- test_training_data$train_recordings |>
   ))
 
 # Load in prepared count data
-counts_full <- read_rds(g("{rds_data_loc}/counts.rds")) |> mutate(event_id = glue::glue("wt-{event_id}"))
+counts_full <- read_rds(g("{rds_data_loc}/counts.rds")) #|> mutate(event_id = glue::glue("wt-{event_id}"))
 # spp_list <- distinct(counts_full, species_name_clean, species_code) |>
 #   filter(!is.na(species_code))
 
@@ -97,6 +161,7 @@ qpad_offsets <- read_rds("output/QPAD_global_offsets.rds") |>
   rename(max_dist = r, time_minutes = t)
 na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
   rename(species = spp)
+
 
 
 prep_brt_data <- function(spp) {
@@ -303,8 +368,164 @@ prep_brt_data <- function(spp) {
     filter(doy >= start_doy & doy <= end_doy) |>
     select(-start_doy, -end_doy, -on_er)
   
-  as.list.environment(environment())
+ 
 }
 
+
+prep_inla_data <- function(spp, run_a2) {
+  
+  
+  spp_name <- spp_codes |> filter(species_name_clean==spp & spp_group == "Bird species") |> 
+    distinct(species_name_clean, common_id)
+  all_relavent_nnames <- filter(spp_codes, species_name_clean == spp |
+                                  common_id %in% spp_name$common_id ) |> 
+    distinct(species_name_clean,species_common_name, common_id)
+  # counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |>
+  # unique()
+  if (nrow(spp_name) != 1) {
+    rlang::abort("unable to identify species name")
+  }
+  # spp_name_sci <- naturecounts::search_species_code(
+  #   spp_name$common_id,
+  #   results = 'exact'
+  # )$scientific_name[[1]]
+  safe_dates_spp <- filter(
+    safe_dates,
+    (english_name %in% all_relavent_nnames$species_common_name | str_detect(species_id,spp_name$common_id)) & biol_region %in% c(4, 5) & level == 2
+  ) |>
+    mutate(
+      on_er = case_when(
+        biol_region == 4 ~ "Ontario Shield",
+        biol_region == 5 ~ "Hudson Bay Lowlands",
+        TRUE ~ NA_character_
+      )
+    ) |>
+    summarize(
+      start_doy = min(start_dt_julian),
+      end_doy = max(end_dt_julian),
+      .by = c(on_er, level)
+    )
+  if(nrow(safe_dates_spp)!=2){
+    safe_dates_spp <-  expand_grid(on_er = c("Ontario Shield","Hudson Bay Lowlands"),
+                                   safe_dates_spp |> dplyr::select(-on_er)    )
+    
+  }
+  
+  
+  counts_spp <- filter(
+    counts,
+    species_name_clean == spp_name$species_name_clean |
+      common_id == spp_name$common_id 
+  ) |>
+    full_join(
+      recordings %>%
+        {
+          if ("geometry" %in% names(.)) {
+            dplyr::select(., -geometry)
+          } else {
+            .
+          }
+        },
+      by = join_by(event_id, location, project)
+    ) |>
+    replace_na(list(total_count_with_tmtt = 0, total_count = 0, y = 0))
+  offsets_spp <- distinct(
+    recordings,
+    location,
+    event_id,
+    dur,
+    species_code = spp
+  ) |>
+    mutate(o = 0, dur = round(dur))
+  
+  if (sum(counts_spp$y) == 0) {
+    rlang::abort(g(
+      "{spp} had zero detections in the training data. Stopping model."
+    ))
+  }
+  
+  if (spp %in% na_pops_offsets$species[!is.na(na_pops_offsets$o)]) {
+    offsets_spp <- left_join(
+      offsets_spp |> dplyr::select(-o),
+      filter(na_pops_offsets, species == spp & max_dist == Inf),
+      by = join_by(species_code == species, dur == time_minutes)
+    )
+  } else {
+    if (spp %in% qpad_offsets$species) {
+      # offsets_spp <- filter(qpad_offsets, species == spp)
+      offsets_spp <- left_join(
+        offsets_spp |> dplyr::select(-o),
+        filter(qpad_offsets, species == spp & max_dist == Inf),
+        by = join_by(species_code == species, dur == time_minutes)
+      )
+    }
+  }
+  
+  if (!"max_dist" %in% names(offsets_spp)) {
+    offsets_spp$max_dist <- Inf
+  }
+  
+  tictoc::tic()
+  
+  setup_dat_0 <- counts_spp |>
+    left_join(
+      offsets_spp |>
+        dplyr::select(event_id, QPAD_offset = o),
+      by = join_by(event_id)
+    ) |>
+    
+    mutate(
+      SiteN = as.numeric(factor(site_id)),
+      rec_id = as.numeric(as.factor(event_id)),
+      event_gr = factor(case_when(
+        is.na(date_time) ~ NA_character_,
+        Time_period %in% c("Dawn", "Dusk", "Night") ~ Time_period,
+        Time_period == "Day" & hour(date_time) <= 10 ~ "Dawn",
+        Time_period == "Day" & hour(date_time) > 10 ~ "Day",
+        TRUE ~ "Other"
+      ))
+    ) |>
+    arrange(site_id, doy, Time_period, t2se) |>
+    mutate(Row = row_number())
+  
+  included_times <- setup_dat_0 |>
+    filter(y > 0) |>
+    janitor::tabyl(event_gr) |>
+    filter(n > 0) |> filter(!is.na(event_gr))
+  
+  setup_dat_nested <-
+    setup_dat_0 |>
+    filter(event_gr %in% included_times$event_gr) |>
+    nest_by(event_gr)
+  
+  rm(setup_dat_0)
+  
+  setup_dat <-
+    setup_dat_nested |>
+    filter(event_gr != "Day") |>
+    rowwise() |>
+    mutate(t2se_scaled = list(arm::rescale(data$t2se))) |>
+    unnest(c(data, t2se_scaled)) |>
+    mutate(doy_r = arm::rescale(doy)) %>%
+    # {
+    #   if(exists("extra_spat_var")){
+    #     left_join(., bind_rows(spatial_cov, extra_spat_var),
+    #               by = join_by(site_id))
+    #   } else{
+        left_join(.,spatial_cov, by = join_by(site_id)) |> 
+    #   }
+    # }  |>
+    st_as_sf() |>
+    filter(!st_is_empty(geometry)) |>
+    mutate(X_sc = X / 10000, Y_sc = Y / 10000) |>
+    
+    ## !!! REMOVING REC_LENGTH 2.4 as there are only 8 points
+    
+    # filter(Rec_length != 2.4) |>
+    mutate(#RL = droplevels(Rec_length), 
+      event_gr = droplevels(event_gr))
+  as.list.environment(environment())
+
+}
 
 

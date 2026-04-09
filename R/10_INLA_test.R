@@ -1,3 +1,4 @@
+run_a2 <- FALSE
 source("R/08_INLA_SPDE.R")
 
 
@@ -6,6 +7,13 @@ test_locations <- test_training_data$test_locations
 train_ids <- test_training_data$train_recordings$event_id 
 test_recordings <- test_training_data$test_recordings
 rm(test_training_data, mesh_il, mesh_inla, mesh_inla_full, locs, ll_ag, locs_agg, locs_neighbours, run_brt, run_brt_preds)
+
+extra_tests <- read_rds(g("{rds_data_loc}/../all_events.rds") )|> 
+  filter(str_detect(project, "Crescent"))
+
+extra_counts <- read_rds(g("{rds_data_loc}/../counts.rds") )|> 
+  filter(str_detect(project, "Crescent"))
+
 
 recordings <-
   g("{rds_data_loc}/all_events.rds") |>
@@ -19,8 +27,9 @@ recordings <-
   filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T) &
            (site_id %in% test_locations$site_id | event_id %in%
               test_recordings$event_id) ) |>
+  bind_rows(extra_tests) |> 
   mutate(
-    test_group = ifelse(site_id %in% test_locations$site_id, "Spatial", "Site"),
+    test_group = ifelse(site_id %in% c(extra_tests$site_id, test_locations$site_id), "Spatial", "Site"),
     Time_period =dplyr::case_when(
       t2ss >= -60 & t2ss <= 150~"Dusk",
       t2sr >= -70 & t2sr <= 220 ~"Dawn",
@@ -40,6 +49,8 @@ recordings <-
 # # rm(test_training_data, train_locs)
 # 
 counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+  filter(event_id %in% recordings$event_id & !event_id %in% extra_counts$event_id ) |>
+  bind_rows(extra_counts) |> 
   dplyr::select(
     event_id,
     location,
@@ -52,7 +63,7 @@ counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
     total_count_with_tmtt
   ) |>
   replace_na(list(collection="WildTrax")) |>
-  filter(event_id %in% recordings$event_id ) |>
+  
   filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |>
   # dplyr::select(event_id, site_id,  project, 
   #               species_name_clean,total_count,
@@ -62,9 +73,28 @@ counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
                     total_count_with_tmtt)) |>
   filter(!is.na(y))
 
+extra_locs <- locs_extra <- read_rds(g("{rds_data_loc}/../locations.rds") )|> 
+    filter(str_detect(project, "Crescent"))
+                        
+
+
+extra_spat_var <- 
+read_rds("output/rds/2026-04-08_spatial_covariates_data_extra.rds") |> 
+mutate( d2O = read_rds(g("output/rds/2026-04-08_dist2ocean_extra.rds"))) |> 
+  bind_cols(dplyr::select(
+    extra_locs,
+    site_id, geometry) ) |> 
+  distinct() |>
+  st_as_sf() %>%
+  bind_cols(as_tibble(st_coordinates(.))) |>
+  dplyr::select(where(~ sum(is.na(.x)) != length(.x))) 
+spatial_cov <- bind_rows(spatial_cov, extra_spat_var)
+
+
+
 
 inla_tests <- function(spp){
-  spp_dir <- str_replace(spp, " ", "_")
+  spp_dir <- str_replace_all(spp, " ", "_")
   tictoc::tic(g('{spp}'))
   out_dir_spatial <- g(
     "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
@@ -83,8 +113,8 @@ inla_tests <- function(spp){
 
   
   
-  res <- read_rds(  g("{out_dir_tmp}/{spp}_inlabru_model.rds")) 
-  df_org <- read_rds(g("{out_dir_tmp}/{spp}_inlabru_model_data.rds")) 
+  res <- read_rds(  g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds")) 
+  df_org <- read_rds(g("{out_dir_tmp}/{spp_dir}_inlabru_model_data.rds")) 
   
   fam <- res$.args$family
   
@@ -97,14 +127,18 @@ inla_tests <- function(spp){
   
   pca_cov_test <- (spatial_cov) |> 
     filter(site_id %in% setup_dat$site_id) |> 
-    dplyr::select(site_id,where(~{!is.factor(.x) & !is.character(.x)}),
-                   X, Y) |> 
+    st_join(setup_dat |> distinct(geometry, year)) |>
+    mutate(year = factor(year)) |> 
+    # dplyr::select(site_id,where(~{!is.factor(.x) & !is.character(.x)}),
+    #                X, Y) |> 
     st_drop_geometry()
   
   # names(df_std)[names(df_std) %in% names(preds)]
   pca_pred_data <- pca_cov_test |> 
     # mutate(location = glue::glue("loc-{1:nrow(pca_cov_test)}")) |>
-    dplyr::select( any_of(names(pca_cov)) )
+    dplyr::select( any_of(names(pca_cov)) ) %>%
+    {if("geometry" %in% names(pca_cov)){
+    mutate(.,geometry = NA) }}
   
   pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) #|>
   pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) |> 
@@ -131,13 +165,20 @@ inla_tests <- function(spp){
     p_vars <- pls_vars
   }else if(str_detect(ff_g,"_PC")){
     p_vars <- pc_vars
-  } else{p_vars <- "project"} 
+  } else if(str_detect(ff_g, "spat_cov")){
+    p_vars <- str_split_1(ff_g, "\\+") |> 
+      str_remove_all(" ") |> 
+      str_subset("spat_cov") |> 
+      str_remove("spat_cov_") } else{
+    p_vars <- "project"} 
   
   site_map <- read_rds(
   g("{out_dir_tmp}/site_map.rds")
   ) |> dplyr::select(site_id, site)
   
+  included_vars <- read_rds(g("{out_dir_tmp}/included_variables.rds"))
   
+ 
   scaled_prediction <- 
     setup_dat %>%
     {
@@ -179,21 +220,27 @@ inla_tests <- function(spp){
       # sum_count_no_tmtt,
       geometry,
       test_group,
+      any_of(p_vars)
       # es_f,
       # all_of(included_continuous)
     )  |> 
     mutate(year = factor(year)) |> 
     left_join(pca_preds |> bind_cols(pls_preds),
-              by = join_by(site_id)) %>% 
-    dplyr::select( site_id, doy,RL,test_group,#Rec_length
-                   event_gr,t2se,site_id,doy,year,y,
-                   X, Y,on_er,#clip_length_min,#offset,
-                  which(names(. )%in% p_vars)) %>%
+              by = join_by(site_id, year)) %>% 
+    # dplyr::select( site_id, doy,RL,test_group,#Rec_length
+    #                event_gr,t2se,site_id,doy,year,y,
+    #                X, Y,on_er,#clip_length_min,#offset,
+    #               which(names(. )%in% p_vars)) %>%
+    dplyr::select(test_group, site_id,RL,event_gr,
+                  year,doy,t2se,year,y,X,Y,
+                  all_of(p_vars)) %>% 
     bind_cols(sd_mn |> 
                 filter(variable %in% names(.) & variable !="t2se") |> 
                 pivot_wider(names_from = variable,
                             values_from = c(sd2, mn))) |> 
-    mutate(across(c(starts_with("PLS"),starts_with("PC"),doy),
+    mutate(across(c(all_of(p_vars),
+      # across(c(starts_with("PLS"),starts_with("PC"),
+               doy),
            ~{(.x - get(glue::glue("mn_{cur_column()}")) )/
                 get(glue::glue("sd2_{cur_column()}") )}
            ) ) |> 
@@ -208,9 +255,9 @@ inla_tests <- function(spp){
            Y_sc = Y/10000,
            # RL = clip_length_min,
            # y = setup_dat$y,
-           site = factor(site_id,
-                         levels = unique(levels(site_map$site), 
-                                         unique(setup_dat$site_id) )) ) |> 
+           site = factor(site_id) )|> #,
+                         # levels = unique(levels(site_map$site), 
+                         #                 unique(setup_dat$site_id) )) ) |> 
     filter(event_gr %in% t2se_sd_mn$event_gr) 
     
     
@@ -219,7 +266,7 @@ inla_tests <- function(spp){
   
 
   # tictoc::tic()
-  nsamp <- 200 # number of posterior samples
+  nsamp <- 1000 # number of posterior samples
   
   # samples from mgcv model 
   # Generate estimates from SPDE estimate only
@@ -271,6 +318,7 @@ inla_tests <- function(spp){
   
   } else{
     # if(str_detect(ff_g,"PC01|PLS01")){ #expect_param <- lambda * exp(o)
+    # browser()
     preds <- inlabru::generate(res, newdata=d_test,
                 as.formula(paste0("~{
                   scaling_prob <- (1 - zero_probability_parameter_for_zero_inflated_poisson_1)
@@ -287,7 +335,7 @@ inla_tests <- function(spp){
                     variance = variance,
                     obs_prob = (1 - scaling_prob) * (y == 0) +
                       scaling_prob * dpois(y, lambda),
-                    prob_zero = (1 - scaling_prob) * (y == 0) +
+                    prob_zero = (1 - scaling_prob) * (0 == 0) +
                       scaling_prob * dpois(0, lambda)
                   )
                   }")),
@@ -510,7 +558,7 @@ inla_tests <- function(spp){
   #   test_lmer_ref <- NULL
   # }
     
-  
+  # browser()
   metrics_iter <- 
   test_full_expect |> 
     nest_by(iter) |> 
@@ -569,30 +617,30 @@ inla_tests <- function(spp){
   median_metrics_all <- bind_rows(t_test$median_metrics)
   iter_metrics_all <- bind_rows(t_test$iteration_metrics)
   
-  cairo_pdf(g("{out_dir}/roc_{spp}.pdf"))
+  cairo_pdf(g("{out_dir}/roc_{spp_dir}.pdf"))
   print(t_test$plot_roc_curve)
   dev.off()
   
-  cairo_pdf(g("{out_dir}/PIT_{spp}.pdf"))
+  cairo_pdf(g("{out_dir}/PIT_{spp_dir}.pdf"))
   print(t_test$plot_PIT)
   dev.off()
   
-  cairo_pdf(g("{out_dir}/counts_density_{spp}.pdf"))
+  cairo_pdf(g("{out_dir}/counts_density_{spp_dir}.pdf"))
   print(t_test$plot_counts_vs_pred_density)
   dev.off()
   
-  cairo_pdf(g("{out_dir}/median_error_{spp}.pdf"))
+  cairo_pdf(g("{out_dir}/median_error_{spp_dir}.pdf"))
   print(t_test$plot_raw_median_error)
   dev.off()
   
   
   
-   # write_rds(t_test, g("{out_dir_tmp}/PIT_{spp}.rds"))
+   # write_rds(t_test, g("{out_dir_tmp}/PIT_{spp_dir}.rds"))
    
-   write_csv(median_metrics_all,g("{out_dir}/median_metrics_{spp}.csv") )
-   write_rds(median_metrics_all,g("{out_dir_tmp}/median_metrics_{spp}.rds") )
-   write_csv(iter_metrics_all,g("{out_dir}/iter_metrics_{spp}.csv") )
-   write_rds(iter_metrics_all,g("{out_dir_tmp}/iter_metrics_{spp}.rds") )
+   write_csv(median_metrics_all,g("{out_dir}/median_metrics_{spp_dir}.csv") )
+   write_rds(median_metrics_all,g("{out_dir_tmp}/median_metrics_{spp_dir}.rds") )
+   write_csv(iter_metrics_all,g("{out_dir}/iter_metrics_{spp_dir}.csv") )
+   write_rds(iter_metrics_all,g("{out_dir_tmp}/iter_metrics_{spp_dir}.rds") )
 
   tictoc::toc()
 }
@@ -600,18 +648,45 @@ inla_tests <- function(spp){
 # mirai::daemons(10)
 # 
 # crated_f <- carrier::crate(~inla_tests(.x))
-
-spp_modeled <- 
-list.files(INLA_output_loc_TMP, "_inlabru_model.rds", recursive = T) |> 
- stringr::str_extract("\\w{4}") |> unique() ## |> 
+# 
+# spp_modeled <- 
+# list.files(INLA_output_loc_TMP, "_inlabru_model.rds", recursive = T) |> 
+#  stringr::str_extract("\\w{4}") |> unique() ## |> 
   # str_subset("ATSP", negate = T) |> 
+
+
+if (str_detect(osVersion, "Windows")) {
+  future::plan(future::multisession, workers = 32)
+} else {
+  future::plan(future::multicore, workers = 32)
+}
   
-spp_comp <- 
-  list.files(INLA_output_loc, "iter_metrics_", recursive = T) |> 
-  stringr::str_extract("\\w{4}") |> unique()
+# spp_comp <- 
+#   list.files(INLA_output_loc, "iter_metrics_", recursive = T) |> 
+#   stringr::str_extract("\\w{4}") |> unique()
 
 
-m <- walk(spp_modeled[!spp_modeled %in% spp_comp], inla_tests)
+spp_comp_inla <-
+  list.files(
+    INLA_output_loc_spatial,
+    ".tif",
+    recursive = !run_a2,
+    full.names = F
+  ) |>
+  str_subset("^A2/", negate = !run_a2) |>
+  str_subset("^A2/\\w{4}/", negate = T) |>
+  str_subset("\\s", negate = T) |>
+  str_subset("CONI_prev", negate = T) |>
+  # str_subset("American_Bittern", negate = T) |>
+  # str_subset("Rusty_Blackbird", negate = T) |>
+  str_extract(glue::glue("{ifelse(run_a2, '(?<=A2/)','^')}\\w+(_)*\\w+(?=/)")) |>
+  str_replace_all("_", " ") |> 
+  unique() |>
+  sort() 
+
+
+
+m <- walk(spp_comp_inla[-1], safely(inla_tests))
 
 
 # library(tidyverse)

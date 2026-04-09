@@ -2,7 +2,8 @@ library(tidyverse)
 library(sf)
 library(fmesher)
 library(patchwork)
-source("R/__globals.R")
+# source("R/__globals.R")
+source("R/08_INLA_SPDE.R")
 # QPAD::load_BAM_QPAD(4)
 library(INLA)
 library(inlabru)
@@ -10,10 +11,10 @@ library(tictoc)
 library(tidymodels)
 
 locs_in <- st_filter(individual_locs, ra_area)
-
+safely_prep_data <- safely(run_inlabru)
 
 prep_predictions <- function(spp, save_objects, return_all = FALSE) {
-  spp_dir <- str_replace(spp, " ", "_")
+  spp_dir <- str_replace_all(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
@@ -28,16 +29,21 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
   out_dir_tmp <- g(
     "{INLA_output_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
-
-  res <- read_rds(g("{out_dir_tmp}/{spp}_inlabru_model.rds"))
+  
+  pca_time <-  file.info(g("{out_dir_tmp}/pca_bundle.rds"))$mtime 
+  if(pca_time< ymd("2026-03-26")) {void <- safely_prep_data(spp);rm(void)}
+  
+  res <- read_rds(g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds"))
   fam <- res$.args$family
 
   pca_cov <- read_rds(g("{out_dir_tmp}/pca_cov.rds"))
   pca_prep <- read_rds(g("{out_dir_tmp}/pca_bundle.rds")) |>
-    bundle::unbundle() |>
+    bundle::unbundle()|>
     recipes::prep()
   basic_rec <- read_rds(g("{out_dir_tmp}/basic_bundle.rds")) |> 
     bundle::unbundle() |> recipes::prep()
+  # basic_rec2 <- read_rds(g("{out_dir_tmp}/basic_bundle2.rds")) |> 
+  #   bundle::unbundle() |> recipes::prep()
   pls_prep <- read_rds(g("{out_dir_tmp}/pls_bundle.rds")) |>
     bundle::unbundle() |>
     recipes::prep()
@@ -48,7 +54,8 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 
   preds_r <- read_rds(g(
     "{prediction_layer_loc}/{pred_date}_prediction_rasters_df.rds"
-  )) |> #2025-02-11_prediction_rasters_df.rds") |>
+  )) |>
+    
     mutate(
       rn = row_number(),
       d2O = read_rds(g(
@@ -68,7 +75,10 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
       total_100 = NA,
       olcb_99_500 = NA,
       total_500 = NA,
-      site_id = NA
+      site_id = NA,
+     across(c(fire_rec30m_100,fire_rec30m_500),
+     ~forcats::fct_drop(case_when((is.na(.x)|as.numeric(as.character(.x))<1955)~factor(0),
+                TRUE~.x) ))
     )
   # xy <- read_rds(g(
   #   "{prediction_layer_loc}/{pred_date}_prediction_rasters_xy.rds"
@@ -76,14 +86,14 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 
   # names(df_std)[names(df_std) %in% names(preds)]
   pca_pred_data <- preds_r |>
-    mutate(site_id = glue::glue("loc-{rn}")) |>
+    mutate(site_id = glue::glue("loc-{rn}"), year = factor(2025) )|>
+    st_as_sf(coords = c("X", "Y"), crs = ont.proj, remove = F) |> 
     dplyr::select(any_of(names(pca_cov)))
   pca_preds <- recipes::bake(pca_prep, new_data = pca_pred_data) 
-
   pls_preds <- recipes::bake(pls_prep, new_data = pca_pred_data) 
   included_vars <- read_rds(g("{out_dir_tmp}/included_variables.rds"))
   
-  basic_preds <- bake(basic_rec, new_data = pca_pred_data)|> 
+  basic_preds <- bake(basic_rec, new_data = pca_pred_data |> mutate(across(year, ~as.numeric(as.character(.x))))) |> 
     dplyr::select(site_id,all_of(list_c(included_vars))) |> 
     mutate(rn = preds_r$rn)
 
@@ -291,7 +301,7 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
   )
 
   if (isTRUE(save_objects)) {
-    write_rds(out_list, g("{out_dir_tmp}/temp_ob_for_pred_{spp}.rds"))
+    write_rds(out_list, g("{out_dir_tmp}/temp_ob_for_pred_{spp_dir}.rds"))
   } else {
     if (isTRUE(return_all)) {
       return(as.list(environment()))
@@ -302,7 +312,7 @@ prep_predictions <- function(spp, save_objects, return_all = FALSE) {
 }
 
 run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
-  spp_dir <- str_replace(spp, " ", "_")
+  spp_dir <- str_replace_all(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
@@ -314,7 +324,7 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
   out_dir_tmp_preds <- g(
     "{INLA_preds_loc_TMP}/{out_dir_app}/{spp_dir}"
   )
-  out_rds_file <- g("{out_dir_tmp_preds}/{spp}_predictions_full.rds")
+  out_rds_file <- g("{out_dir_tmp_preds}/{spp_dir}_predictions_full.rds")
   if (file.exists(out_rds_file)) {
     mod_time <- file.info(out_rds_file)$mtime
     if (ymd_hms(mod_time) > ymd_hms("2025-6-12 06:00:00")) {
@@ -324,16 +334,16 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
   dir.create(out_dir_tmp_preds, recursive = T)
   if (isTRUE(load_rds)) {
     list2env(
-      read_rds(g("{out_dir_tmp}/temp_ob_for_pred_{spp}.rds")),
+      read_rds(g("{out_dir_tmp}/temp_ob_for_pred_{spp_dir}.rds")),
       environment()
     )
-    res <- read_rds(g("{out_dir_tmp}/{spp}_inlabru_model.rds"))
+    res <- read_rds(g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds"))
   } else {
     list2env(
       prep_predictions(spp, save_objects = FALSE, return_all = FALSE),
       environment()
     )
-    res <- read_rds(g("{out_dir_tmp}/{spp}_inlabru_model.rds"))
+    res <- read_rds(g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds"))
   }
   gc()
   nsamp <- 300
@@ -370,12 +380,12 @@ run_predictions <- function(spp, load_rds = FALSE, gen_map_outputs = TRUE) {
     gen_maps(spp, preds = preds)
   }
   if (isTRUE(load_rds)) {
-    file.remove(g("{out_dir_tmp}/temp_ob_for_pred_{spp}.rds"))
+    file.remove(g("{out_dir_tmp}/temp_ob_for_pred_{spp_dir}.rds"))
   }
 }
 
 gen_maps <- function(spp, preds = NULL) {
-  spp_dir <- str_replace(spp, " ", "_")
+  spp_dir <- str_replace_all(spp, " ", "_")
   if (run_a2) {
     out_dir_app <- "A2"
   } else {
@@ -395,9 +405,9 @@ gen_maps <- function(spp, preds = NULL) {
     "{INLA_output_loc}/{out_dir_app}/{spp_dir}"
   )
   tictoc::tic()
-  preds_file <- g("{out_dir_tmp_preds}/{spp}_predictions_full.rds")
+  preds_file <- g("{out_dir_tmp_preds}/{spp_dir}_predictions_full.rds")
   if (is.null(preds)) {
-    preds_file <- g("{out_dir_tmp_preds}/{spp}_predictions_full.rds")
+    preds_file <- g("{out_dir_tmp_preds}/{spp_dir}_predictions_full.rds")
 
     preds <- read_rds(preds_file)
   }
@@ -459,6 +469,10 @@ gen_maps <- function(spp, preds = NULL) {
   pred_test <-
     preds_r |>
     filter(!is.na(clc20_1_100))
+  
+  if(nrow(pred_test)!=nrow(pres_obs)){
+    pred_test <- preds_r
+  }
 
   # prob obs -----
   pred_test$p_obs <- matrixStats::rowMedians(pres_obs, na.rm = T, digits = 4L) #apply((pres_obs), 1, mean)
@@ -672,11 +686,11 @@ gen_maps <- function(spp, preds = NULL) {
   #   "k_cv")
 
   # terra::writeCDF(outstack, filename = glue::glue("{out_dir_spatial}/Predictions_{spp}.nc"),overwrite=T, split=T)
-browser()
+
   for (i in names_outstack) {
     terra::writeRaster(
       outstack[[i]],
-      glue::glue("{out_dir_spatial}/{i}_{spp}.tif"),
+      glue::glue("{out_dir_spatial}/{i}_{spp_dir}.tif"),
       overwrite = T
     )
   }
@@ -729,8 +743,8 @@ browser()
       
     )
   }
-  maps_ex <- g("{out_dir}/maps_expectations_{spp}.pdf")
-  maps_uc <- g("{out_dir}/maps_uncertainty_{spp}.pdf")
+  maps_ex <- g("{out_dir}/maps_expectations_{spp_dir}.pdf")
+  maps_uc <- g("{out_dir}/maps_uncertainty_{spp_dir}.pdf")
   if (file.exists(maps_ex)) {
     file.remove(maps_ex)
   }

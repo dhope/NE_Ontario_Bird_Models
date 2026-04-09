@@ -1,7 +1,49 @@
 run_a2 <- FALSE
 source("R/09_INLA_preds.R")
 
-run_predictions("Palm Warbler", load_rds = F, gen_map_outputs = TRUE)
+
+
+
+spp_comp_inla <-
+  list.files(
+    INLA_output_loc_TMP,
+    "_inlabru_model.rds",
+    recursive = !run_a2,
+    full.names = F
+  ) |>
+  str_subset("^A2/", negate = !run_a2) |>
+  str_subset("^A2/\\w{4}/", negate = T) |>
+  str_subset("\\s", negate = T) |>
+  str_subset("CONI_prev", negate = T) |>
+  # str_subset("American_Bittern", negate = T) |>
+  # str_subset("Rusty_Blackbird", negate = T) |>
+  str_extract(glue::glue("{ifelse(run_a2, '(?<=A2/)','^')}\\w+(_)*\\w+(?=/)")) |>
+  str_replace_all("_", " ") |> 
+  unique() |>
+  sort()  #|> str_subset("CONW", negate = T)
+
+
+comp <- 
+list.files("D:/SPATIAL/RoF_Models/INLA3", ".tif", recursive=T) |> 
+  str_subset("^A2/", negate = !run_a2) |>
+  str_subset("^A2/\\w{4}/", negate = T) |>
+  str_subset("\\s", negate = T) |>
+  str_subset("CONI_prev", negate = T) |>
+  str_extract(glue::glue("{ifelse(run_a2, '(?<=A2/)','^')}\\w+(_)*\\w+(?=/)")) |>
+  str_replace_all("_", " ") |> 
+  unique() |>
+  sort()
+
+missed <- spp_comp_inla[!spp_comp_inla %in% comp]
+# run_predictions("Rusty Blackbird", load_rds = F, gen_map_outputs = TRUE)
+
+rp <- safely(run_predictions)
+x <- map(missed, rp,load_rds = F, gen_map_outputs = TRUE)
+sink("output_pred_inla.log")
+print(x)
+sink()
+
+
 
 # 
 # 

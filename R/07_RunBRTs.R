@@ -1,7 +1,6 @@
 source("R/06_BRT_time.R")
 rm_spp_pat <- c("Gull", "Loon", "Mallard", "Swan", "Harrier", "Eagle", "Teal", "Pintail", "Goldeneye", "Merganser", "Duck", "Merlin",
-                "Scoter", "Tern", "Wigeon", 
-                "Yellowlegs", "Sandhill", "Goldfinch") # Already ran these in testing
+                "Scoter", "Tern", "Wigeon", "Gadwall") # Already ran these in testing
 # spp_to_run <-
 #   summarize(
 #     counts,
@@ -48,7 +47,7 @@ gen_spp_mod_list <- function(spp){
 }
 
 running_spp <- map(spp_to_run$species_name_clean, gen_spp_mod_list)
-list_c(running_spp) |> write_lines("specieslist.txt")
+list_c(running_spp) |>sort() |>  write_lines("specieslist.txt")
 
 
 # spp_completed <- list.files(

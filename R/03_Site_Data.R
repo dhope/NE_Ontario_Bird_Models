@@ -9,11 +9,15 @@ locs_atlas2 <-
       c("OBBA2PC") &
       str_detect(project, "Nocturnal|Resample", negate = T)
   ) |>
-  st_filter(ra_buffer)
+  st_filter(ra_buffer) |> 
+  distinct(site_id, geometry)
 if (run_a2) {
   locs <- locs_atlas2
 }
 
+# locs_extra <- read_rds(g("{rds_data_loc}/../locations.rds") )|> 
+#   filter(str_detect(project, "Crescent"))
+# locs <- locs_extra # For the test sites
 
 ld <- list.dirs(
   spatial_raster_location,
@@ -288,6 +292,7 @@ for (ii in length(sw_strings)) {
 
 
 if (run_a2) {
+  cov$site_id <- locs$site_id
   write_rds(cov, g("output/rds/{Sys.Date()}_spatial_covariates_Atlas2.rds"))
 } else {
   write_rds(cov, g("output/rds/{Sys.Date()}_spatial_covariates_data.rds"))

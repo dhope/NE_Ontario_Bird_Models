@@ -2,12 +2,21 @@ library(tidyverse)
 library(sf)
 library(fmesher)
 library(patchwork)
-source("R/__globals.R")
+# source("R/__globals.R")s
 library(INLA)
 library(inlabru)
 library(tictoc)
 rn_vars <- c("X_")
+run_INLA <- TRUE
+g <- glue::glue
 
+if (str_detect(osVersion, "Windows")) {
+  source("R/__paths.R")
+} else {
+  source("R/__paths_linux.R")
+}
+source("R/__globals.R")
+source("R/__data_prep.R")
 # test_training_data <- read_rds(g(
 #   "output/{date_compiled}_test_training_data.rds"
 # ))
@@ -19,60 +28,6 @@ rn_vars <- c("X_")
 #   filter(!st_is_empty(geometry))
 
 # run_a2 <- FALSE
-
-if (run_a2) {
-  spp_cov_date <- "2026-02-04"#"2025-10-28"
-  spp_cov_file <- g("output/rds/{spp_cov_date}_spatial_covariates_Atlas2.rds")
-  individual_locs <-
-    g("{rds_data_loc}/locations.rds") |>
-    read_rds() |>
-    filter(
-      collection %in%
-        c("OBBA2PC") &
-        str_detect(project, "Nocturnal|Resample", negate = T)
-    ) |>
-    st_filter(ra_buffer) |> 
-    st_join(ontario_ez)
-  # aggregated_locs <- dplyr::select(individual_locs, site_id) |> 
-  #   st_join( select(ontario_ez, on_er = ZONE_NAME))
-
-  raw_recordings <- g("{rds_data_loc}/all_events.rds") |>
-    read_rds() |>
-    filter(
-      collection %in% c("OBBA2PC") & location %in% individual_locs$location
-    ) |>
-    mutate(date = ymd(glue::glue("{year}-{month}-{day}")), doy = yday(date))
-  raw_counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
-    replace_na(list(collection = "WildTrax")) |>
-    filter(event_id %in% raw_recordings$event_id) |>
-    filter(str_detect(
-      project,
-      "(Extraction)|(Nocturnal)|(Resample)",
-      negate = T
-    ))
-  out_dir_app <- "A2"
-} else {
-  spp_cov_date <- "2026-02-02"#"2025-10-28"
-  spp_cov_file <- g("output/rds/{spp_cov_date}_spatial_covariates_data.rds") 
-  # raw_recordings <- test_training_data$train_recordings |>
-  #   left_join(aggregated_locs, by = join_by(project, location, collection)) |>
-  #   filter(str_detect(
-  #     project,
-  #     "(Extraction)|(Nocturnal)|(Resample)",
-  #     negate = T
-  #   ))
-
-  # raw_counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
-  #   replace_na(list(collection = "WildTrax")) |>
-  #   filter(event_id %in% raw_recordings$event_id) |>
-  #   filter(str_detect(
-  #     project,
-  #     "(Extraction)|(Nocturnal)|(Resample)",
-  #     negate = T
-  #   ))
-  out_dir_app <- ""
-}
-source("R/__data_prep.R")
 
 # spatial_cov <-
 #   spp_cov_file |>
@@ -90,7 +45,6 @@ source("R/__data_prep.R")
 #   bind_cols(as_tibble(st_coordinates(.))) |>
 #   dplyr::select(where(~ sum(is.na(.x)) != length(.x))) |>
 #   left_join(st_drop_geometry(aggregated_locs), by = join_by(site_id_agg))
-
 
 # recordings <- raw_recordings |>
 #   mutate(
@@ -111,9 +65,8 @@ source("R/__data_prep.R")
 #     doy = yday(date),
 #     recording_id = as.numeric(recording_id)
 #   ) |>
-  # mutate(Rec_length = factor(as.numeric(round(dur, 1)))) |>
-  # filter(Rec_length %in% c(1, 3, 5, 10))
-
+# mutate(Rec_length = factor(as.numeric(round(dur, 1)))) |>
+# filter(Rec_length %in% c(1, 3, 5, 10))
 
 # rm(test_training_data,  raw_recordings)
 
@@ -140,210 +93,9 @@ source("R/__data_prep.R")
 # na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
 #   rename(species = spp)
 
-
-prep_inla_data <- function(spp, run_a2) {
-  # if (!run_a2) {
-  #   spp_name <- spp_codes$species_name_clean[spp_codes$species_code == spp]
-  #   # counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |>
-  #   # unique()
-  #   if (length(spp_name) != 1) {
-  #     rlang::abort("unable to identify species name")
-  #   }
-  #   spp_name_sci <- naturecounts::search_species_code(
-  #     spp,
-  #     results = 'exact'
-  #   )$scientific_name[[1]]
-  # } else {
-  #   if (!spp %in% a2_codes$ONATLAS2) {
-  #     spp_id <- a3_codes$species_id[a3_codes$BSCDATA == spp]
-  #     spp_a2 <- a2_codes$ONATLAS2[a2_codes$species_id == spp_id]
-  #     if (length(spp_a2) == 0) {
-  #       rlang::abort(
-  #         "Species code has changed since atlas 2, cannot find replacment"
-  #       )
-  #     }
-  # 
-  #     spp <- spp_a2
-  #   }
-  #   spp_name <- a2_codes$english_name[a2_codes$ONATLAS2 == spp]
-  #   spp_name_sci <- a2_codes$scientific_name[a2_codes$ONATLAS2 == spp]
-  # }
-  # if (length(spp_name) != 1) {
-  #   rlang::abort("unable to identify species name")
-  # }
-  # safe_dates_spp <- filter(
-  #   safe_dates,
-  #   english_name == spp_name & biol_region %in% c(4, 5) & level == 2
-  # ) |>
-  #   mutate(
-  #     on_er = case_when(
-  #       biol_region == 4 ~ "Ontario Shield",
-  #       biol_region == 5 ~ "Hudson Bay Lowlands",
-  #       TRUE ~ NA_character_
-  #     )
-  #   ) |>
-  #   summarize(
-  #     start_doy = min(start_dt_julian),
-  #     end_doy = max(end_dt_julian),
-  #     .by = c(on_er, level)
-  #   )
-  # if(nrow(safe_dates_spp)!=2){
-  #   safe_dates_spp <-  expand_grid(on_er = c("Ontario Shield","Hudson Bay Lowlands"),
-  #                                  safe_dates_spp |> dplyr::select(-on_er)    )
-  #   
-  # }
-  
-  spp_name <- spp_codes |> filter(species_name_clean==spp & spp_group == "Bird species") |> 
-    distinct(species_name_clean, common_id)
-  all_relavent_nnames <- filter(spp_codes, species_name_clean == spp |
-                                  common_id %in% spp_name$common_id ) |> 
-    distinct(species_name_clean,species_common_name, common_id)
-  # counts$species_name_clean[counts$species_code==spp & !is.na(counts$species_code)] |>
-  # unique()
-  if (nrow(spp_name) != 1) {
-    rlang::abort("unable to identify species name")
-  }
-  # spp_name_sci <- naturecounts::search_species_code(
-  #   spp_name$common_id,
-  #   results = 'exact'
-  # )$scientific_name[[1]]
-  safe_dates_spp <- filter(
-    safe_dates,
-    (english_name %in% all_relavent_nnames$species_common_name | str_detect(species_id,spp_name$common_id)) & biol_region %in% c(4, 5) & level == 2
-  ) |>
-    mutate(
-      on_er = case_when(
-        biol_region == 4 ~ "Ontario Shield",
-        biol_region == 5 ~ "Hudson Bay Lowlands",
-        TRUE ~ NA_character_
-      )
-    ) |>
-    summarize(
-      start_doy = min(start_dt_julian),
-      end_doy = max(end_dt_julian),
-      .by = c(on_er, level)
-    )
-  if(nrow(safe_dates_spp)!=2){
-    safe_dates_spp <-  expand_grid(on_er = c("Ontario Shield","Hudson Bay Lowlands"),
-                                   safe_dates_spp |> dplyr::select(-on_er)    )
-    
-  }
-  
-  
-  counts_spp <- filter(
-    counts,
-    species_name_clean == spp_name$species_name_clean |
-      common_id == spp_name$common_id 
-  ) |>
-    full_join(
-      recordings %>%
-        {
-          if ("geometry" %in% names(.)) {
-            dplyr::select(., -geometry)
-          } else {
-            .
-          }
-        },
-      by = join_by(event_id, location, project)
-    ) |>
-    replace_na(list(total_count_with_tmtt = 0, total_count = 0, y = 0))
-  offsets_spp <- distinct(
-    recordings,
-    location,
-    event_id,
-    dur,
-    species_code = spp
-  ) |>
-    mutate(o = 0, dur = round(dur))
-
-  if (sum(counts_spp$y) == 0) {
-    rlang::abort(g(
-      "{spp} had zero detections in the training data. Stopping model."
-    ))
-  }
-
-  if (spp %in% na_pops_offsets$species[!is.na(na_pops_offsets$o)]) {
-    offsets_spp <- left_join(
-      offsets_spp |> dplyr::select(-o),
-      filter(na_pops_offsets, species == spp & max_dist == Inf),
-      by = join_by(species_code == species, dur == time_minutes)
-    )
-  } else {
-    if (spp %in% qpad_offsets$species) {
-      # offsets_spp <- filter(qpad_offsets, species == spp)
-      offsets_spp <- left_join(
-        offsets_spp |> dplyr::select(-o),
-        filter(qpad_offsets, species == spp & max_dist == Inf),
-        by = join_by(species_code == species, dur == time_minutes)
-      )
-    }
-  }
-
-  if (!"max_dist" %in% names(offsets_spp)) {
-    offsets_spp$max_dist <- Inf
-  }
-
-  tictoc::tic()
-
-  setup_dat_0 <- counts_spp |>
-    left_join(
-      offsets_spp |>
-        dplyr::select(event_id, QPAD_offset = o),
-      by = join_by(event_id)
-    ) |>
-
-    mutate(
-      SiteN = as.numeric(factor(site_id)),
-      rec_id = as.numeric(as.factor(event_id)),
-      event_gr = factor(case_when(
-        is.na(date_time) ~ NA_character_,
-        Time_period %in% c("Dawn", "Dusk", "Night") ~ Time_period,
-        Time_period == "Day" & hour(date_time) <= 10 ~ "Dawn",
-        Time_period == "Day" & hour(date_time) > 10 ~ "Day",
-        TRUE ~ "Other"
-      ))
-    ) |>
-    arrange(site_id, doy, Time_period, t2se) |>
-    mutate(Row = row_number())
-
-  included_times <- setup_dat_0 |>
-    filter(y > 0) |>
-    janitor::tabyl(event_gr) |>
-    filter(n > 0)
-
-  setup_dat_nested <-
-    setup_dat_0 |>
-    filter(event_gr %in% included_times$event_gr) |>
-    nest_by(event_gr)
-
-  rm(setup_dat_0)
-
-  setup_dat <-
-    setup_dat_nested |>
-    filter(event_gr != "Day") |>
-    rowwise() |>
-    mutate(t2se_scaled = list(arm::rescale(data$t2se))) |>
-    unnest(c(data, t2se_scaled)) |>
-    mutate(doy_r = arm::rescale(doy)) |>
-
-    left_join(spatial_cov, by = join_by(site_id)) |>
-    st_as_sf() |>
-    filter(!st_is_empty(geometry)) |>
-    mutate(X_sc = X / 10000, Y_sc = Y / 10000) |>
-
-    ## !!! REMOVING REC_LENGTH 2.4 as there are only 8 points
-
-    # filter(Rec_length != 2.4) |>
-    mutate(#RL = droplevels(Rec_length), 
-           event_gr = droplevels(event_gr))
-
-  as.list.environment(environment())
-}
-
-
 run_inlabru <- function(spp) {
   print(glue::glue("Running {spp} --------------------------------------"))
-  spp_dir <- str_replace(spp, " ", "_")
+  spp_dir <- str_replace_all(spp, " ", "_")|> str_remove_all("\\'")
   out_dir_spatial <- g(
     "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
   )
@@ -391,19 +143,22 @@ run_inlabru <- function(spp) {
     pull(name)
 
   library(tidymodels)
+  yrs <- unique(setup_dat$year)
+  
   pca_cov <- (spatial_cov) |>
+    expand_grid(year = yrs) |> 
     filter(site_id %in% setup_dat$site_id) |>
-    dplyr::select(
-      site_id,
-      where(
-        ~ {
-          !is.factor(.x) & !is.character(.x)
-        }
-      ),
-      
-      # -X,
-      # -Y
-    ) |>
+    # dplyr::select(
+    #   site_id,
+    #   where(
+    #     ~ {
+    #       !is.factor(.x) & !is.character(.x)
+    #     }
+    #   ),
+    # 
+    #   # -X,
+    #   # -Y
+    # ) |>
     left_join(
       summarise(counts_spp, mean_count = mean(y), .by = site_id),
       by = join_by(site_id)
@@ -424,9 +179,12 @@ run_inlabru <- function(spp) {
       -geometry
     ) |>
     st_drop_geometry() |>
-    names()
+    names() |>
+    c("NFIS_is_forest_500", "NFIS_is_forest_100")
 
-  brt_vi <- g("{BRT_output_loc}/{str_replace(spp, ' ', '_')}/{spp}_time_vi.csv")
+  brt_vi <- g(
+    "{BRT_output_loc}/{spp_dir}/{spp_dir}_time_vi.csv"
+  )
   if (file.exists(brt_vi)) {
     top_vi <- read_csv(brt_vi, col_types = cols()) |>
       filter(
@@ -439,11 +197,13 @@ run_inlabru <- function(spp) {
             "year",
             "Time_period_Dusk",
             "event_gr_Dawn",
+            "type_Point.Count",
             "total_100",
             "event_gr_Dusk",
             "total_500"
           ),
-        str_detect(Variable, "Rec_length", negate = T)
+        str_detect(Variable, "Rec_length", negate = T),
+        str_detect(Variable, "year_X", negate = T)
       ) |>
       arrange(desc(Importance)) |>
       mutate(cVI = cumsum(Importance), dcVI = cVI - lag(cVI, default = 0))
@@ -452,16 +212,18 @@ run_inlabru <- function(spp) {
     inc_vi <- top_vi |>
       filter(
         cVI < min(0.8, ranv) #& #!Variable %in% withNA &
-          # str_remove(Variable, "_X\\d+") %in% names(spatial_cov)
+        # str_remove(Variable, "_X\\d+") %in% names(spatial_cov)
       ) |>
-      pull(Variable) |> 
-      str_remove_all("_X\\d") |> str_remove("(?<=[1|5]00)\\d+$") |> 
-      str_remove("(?<=year)\\d+") |> unique()
+      slice_head(n = 15) |>
+      pull(Variable) |>
+      str_remove_all("_X\\d") |>
+      str_remove("(?<=[1|5]00)\\d+$") |>
+      str_remove("(?<=year)\\d+") |>
+      str_remove("_Point.Count") |>
+      unique()
 
     included_factors <- inc_vi[inc_vi %in% factor_cov]
     included_continuous <- inc_vi[!inc_vi %in% factor_cov]
-    
-    
   } else {
     included_factors <- NULL
     file.create(g("{out_dir}/Factors_not_used.txt"))
@@ -478,25 +240,28 @@ run_inlabru <- function(spp) {
       contains("event_id"),
       contains("collection"),
       contains("OHN_swatd_500"),
-      contains("dem_asp8")
+      contains("dem_asp8"),
+      contains('geometry')
     ) |> #,X,Y ) |>
-    step_mutate(NFIS_is_forest_100 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
-                NFIS_is_forest_500 = #across(contains("NFIS_age_500"),
-                  factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+    step_mutate(
+      NFIS_is_forest_100 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+      #across(contains("NFIS_age_500"),
+      NFIS_is_forest_500 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
     ) |>
     update_role(site_id, new_role = "id") %>%
     update_role(mean_count, new_role = "outcome") %>%
     step_novel(all_factor_predictors()) |>
     step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
     step_zv(all_predictors()) |>
-    step_impute_linear(contains("Climate"),
-                       impute_with = imp_vars(c(X,Y) ) ) |>
-    step_rm(X, Y) |> 
+    step_impute_linear(contains("Climate"), impute_with = imp_vars(c(X, Y))) |>
+    step_rm(X, Y) |>
     step_impute_median(all_numeric_predictors()) |>
     step_mutate(
       across(
         contains("rec30") & where(is.factor) & contains("fire"),
         ~ case_when(
+          is.na(.x) ~ 
+            as.numeric(as.character(year)) - 1955,
           as.numeric(as.character(.x)) == 0 ~
             as.numeric(as.character(year)) - 1955,
           TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
@@ -505,21 +270,25 @@ run_inlabru <- function(spp) {
       across(
         contains("rec30") & where(is.factor) & contains("harvest"),
         ~ case_when(
-          as.numeric(as.character(.x)) == 0 ~
+          (as.numeric(as.character(.x)) == 0 | is.na(.x)) ~
             as.numeric(as.character(year)) - 1980,
           TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
         )
       )
-    ) 
-  
+    )
+
   dat_rec <- dat_rec_base |>
+    step_rm(all_factor_predictors()
+          ) |>
+    step_mutate(year = factor(year)) |> 
+    update_role(year, site_id, new_role = 'id variable') |> 
     step_center(all_numeric_predictors()) %>%
     step_scale(
       all_numeric_predictors(),
       sds = 2
     ) |>
     step_nzv(
-      all_predictors(),
+      all_numeric_predictors(),
       ,
       -starts_with('QPAD_offset'),
       freq_cut = 95 / 5,
@@ -532,16 +301,17 @@ run_inlabru <- function(spp) {
     )
 
   pca_rec <- dat_rec %>%
-    step_rm(mean_count) |>
+   step_rm(mean_count) |> 
     step_pca(
       all_numeric_predictors(),
       id = "pca",
       # threshold = 0.99,
       num_comp = 12
-    )
+    ) 
 
   pls_rec <- dat_rec %>%
-    step_pls(all_numeric_predictors(), outcome = 'mean_count', num_comp = 12)
+    
+    step_pls(all_numeric_predictors(), outcome = 'mean_count', num_comp = 12) 
   # embed::step_umap(all_numeric_predictors(), outcome = vars(avg_price_per_room))
   # step_spline_natural(arrival_date_num, deg_free = 10)
 
@@ -551,26 +321,31 @@ run_inlabru <- function(spp) {
   pca_out <- bake(pca_prep, new_data = NULL)
 
   pls_out <- prep(pls_rec) |> bake(new_data = NULL)
-  basic_out <- prep(dat_rec_base) |> bake(new_data = NULL) |> 
-    dplyr::select(site_id,all_of(included_continuous))
-    
+  basic_out <- prep(dat_rec_base) |>
+    bake(new_data = NULL) |>
+    dplyr::select(site_id,year, any_of(included_continuous)) |> 
+    mutate(year = factor(year))
+
   # pca <- prcomp(cov[,-1], retx=TRUE, center=TRUE, scale.=TRUE)
   # pca_pred <- predict(pca)
   dat_basic_bundle <- bundle::bundle(dat_rec_base)
+  dat_basic_bundle2 <- bundle::bundle(dat_rec)
   pca_bun <- bundle::bundle(pca_prep)
 
   df_std <- setup_dat %>% #st_drop_geometry() |>
-   {
-     if("on_er" %in% names(.)){.}else{
-     st_join(.,ontario_ez |> dplyr::select(on_er = ZONE_NAME)    )
-     }
-     } |> 
+    {
+      if ("on_er" %in% names(.)) {
+        .
+      } else {
+        st_join(., ontario_ez |> dplyr::select(on_er = ZONE_NAME))
+      }
+    } |>
     dplyr::select(
       Row,
       y,
       t2se_scaled,
       doy_r,
-      RL=clip_length_min,
+      RL = clip_length_min,
       rec_id,
       SiteN,
       # location,
@@ -593,20 +368,21 @@ run_inlabru <- function(spp) {
     mutate(year = factor(year)) |>
     left_join(
       pca_out, #|> mutate(across(location, as.character)),
-      by = join_by(site_id)
+      by = join_by(site_id, year)
     ) |>
     left_join(
       pls_out, #|> mutate(across(location, as.character)),
-      by = join_by(site_id)
-    ) |> left_join(basic_out, by = join_by(site_id)) %>%
+      by = join_by(site_id, year)
+    ) |>
+    left_join(basic_out, by = join_by(site_id,year)) %>%
     {
       if (length(included_factors) > 0) {
         left_join(
           .,
           distinct(spatial_cov) |>
             st_drop_geometry() |>
-            select(location, {{ included_factors }}),
-          by = join_by(location)
+            select(site_id, {{ included_factors }}),
+          by = join_by(site_id)
         ) |>
           mutate(across(
             contains("rec30") & where(is.factor),
@@ -622,7 +398,7 @@ run_inlabru <- function(spp) {
         .
       }
     } |>
-    dplyr::select( -mean_count) |>
+    dplyr::select(-mean_count) |>
     filter(!is.na(QPAD_offset)) |>
     dplyr::select(where(~ sum(is.na(.x)) != length(.x))) |>
     # dplyr::select(-c(project_id, NA_codes, location_id,sum_count,
@@ -657,15 +433,19 @@ run_inlabru <- function(spp) {
       site = (factor(site_id))
     ) %>%
     {
-      if (run_a2) {
+      if (run_a2|| nrow(included_times)==1) {
         mutate(., t2se_sc = t2se_scaled)
       } else {
-        bind_cols(
-          .,
-          model.matrix(~ t2se_scaled * event_gr, data = .) |>
-            as_tibble() |>
-            rename_with(~ str_remove_all(.x, "event_gr|\\(|\\)|(scaled:)|aled"))
-        ) } |>
+        {
+          bind_cols(
+            .,
+            model.matrix(~ t2se_scaled * event_gr, data = .) |>
+              as_tibble() |>
+              rename_with(
+                ~ str_remove_all(.x, "event_gr|\\(|\\)|(scaled:)|aled")
+              )
+          )
+        } |>
           left_join(
             select(
               safe_dates_spp,
@@ -677,31 +457,36 @@ run_inlabru <- function(spp) {
           ) |>
           filter(doy >= start_doy & doy <= end_doy) |>
           select(-start_doy, -end_doy, -on_er, -doy)
-      
+      }
     }
 
   # model.matrix(~ t2se_scaled * event_gr, data = .) |>
   #           as_tibble() %>%
   #           setNames(nm = c("Intercept", "t2se_sc", "Dusk", "t2se_dusk"))
-  write_rds(df_std, g("{out_dir_tmp}/{spp}_inlabru_model_data.rds"))
+  write_rds(df_std, g("{out_dir_tmp}/{spp_dir}_inlabru_model_data.rds"))
   write_rds(offsets_spp, g("{out_dir_tmp}/offsets_spp.rds"))
   write_rds(pca_bun, g("{out_dir_tmp}/pca_bundle.rds"))
   write_rds(dat_basic_bundle, g("{out_dir_tmp}/basic_bundle.rds"))
+  write_rds(dat_basic_bundle2, g("{out_dir_tmp}/basic_bundle2.rds"))
   write_rds(bundle::bundle(prep(pls_rec)), g("{out_dir_tmp}/pls_bundle.rds"))
   write_rds(pca_cov, g("{out_dir_tmp}/pca_cov.rds"))
-
+  
+  
+  
+  rlang::abort("Stopping here")
   sd_mn <-
     setup_dat |>
+    mutate(year=factor(year)) |> 
     st_drop_geometry() |>
     left_join(
       pca_out |>
         mutate(across(site_id, as.character)),
-      by = join_by(site_id)
+      by = join_by(site_id,year)
     ) |>
     left_join(
       pls_out |>
         mutate(across(site_id, as.character)),
-      by = join_by(site_id)
+      by = join_by(site_id,year)
     ) |>
     filter(!is.na(QPAD_offset)) |>
     mutate(X_sc = X / 10000, Y_sc = Y / 10000) |>
@@ -731,22 +516,21 @@ run_inlabru <- function(spp) {
     pivot_wider(names_from = estimate_type, values_from = value)
 
   write_rds(
-    list(sd_mn = sd_mn, t2se_sd_mn = t2se_sd_mn),#, RL_Fac = levels(df_std$RL)),
+    list(sd_mn = sd_mn, t2se_sd_mn = t2se_sd_mn), #, RL_Fac = levels(df_std$RL)),
     g("{out_dir_tmp}/sd_means.rds")
   )
-  write_rds(list(continuous = included_continuous, factors = included_factors),
-            g("{out_dir_tmp}/included_variables.rds")
-            )
+  write_rds(
+    list(continuous = included_continuous, factors = included_factors),
+    g("{out_dir_tmp}/included_variables.rds")
+  )
   sf_dat <- st_as_sf(setup_dat) |> st_as_sfc()
 
   # make a set of distinct study sites for mapping
   site_map <- df_std %>%
     st_as_sf() |>
-    select(site_id,site, X, Y) %>%
+    select(site_id, site, X, Y) %>%
     distinct()
-  write_rds(site_map, 
-            g("{out_dir_tmp}/site_map.rds")
-            )
+  write_rds(site_map, g("{out_dir_tmp}/site_map.rds"))
   # make a two extension hulls and mesh for spatial model
   a2_f <- NULL
   ## Import A2 posteriors for priors
@@ -764,7 +548,7 @@ run_inlabru <- function(spp) {
   pc_vars <- c(
     str_subset(names(pca_out)[-1], "^PC\\d"),
     str_subset(names(pls_out)[-1], "^PLS\\d"),
-    if(exists("included_continuous")) included_continuous
+    if (exists("included_continuous")) included_continuous
   )
   pca_vars <- c(str_subset(names(pca_out)[-1], "^PC\\d"))
   pls_vars <- str_subset(names(pls_out)[-1], "^PLS\\d")
@@ -774,20 +558,19 @@ run_inlabru <- function(spp) {
     # browser()
     x <- tibble()
     rn <- 1
-    while (nrow(x)==0 & rn <= nrow(a2_waic)){
-    x <- (mod_pars[
-      mod_pars$model ==
-        a2_waic$Model[str_detect(
-          a2_waic$Model,
-          paste0(mod_type, collapse = "|")
-        )][[rn]] &
-        str_detect(mod_pars$var, type) &
-        str_detect(mod_pars$var, var),
-      c("mode", "pmarginal_less_median")
-    ])
-    rn <- rn+1
+    while (nrow(x) == 0 & rn <= nrow(a2_waic)) {
+      x <- (mod_pars[
+        mod_pars$model ==
+          a2_waic$Model[str_detect(
+            a2_waic$Model,
+            paste0(mod_type, collapse = "|")
+          )][[rn]] &
+          str_detect(mod_pars$var, type) &
+          str_detect(mod_pars$var, var),
+        c("mode", "pmarginal_less_median")
+      ])
+      rn <- rn + 1
     }
-    
 
     if (nrow(x) > 1) {
       x <- x[1, ]
@@ -802,8 +585,8 @@ run_inlabru <- function(spp) {
   }
 
   if (any(str_detect(a2_f, "parameter_summary"))) {
-    mod_pars <- read_csv(g("{a2_dir}/{spp}_model_parameter_summary.csv"))
-    a2_waic <- read_csv(g("{a2_dir}/waic_{spp}_with_linear.csv"))
+    mod_pars <- read_csv(g("{a2_dir}/{spp_dir}_model_parameter_summary.csv"))
+    a2_waic <- read_csv(g("{a2_dir}/waic_{spp_dir}_with_linear.csv"))
     spde <- inla.spde2.pcmatern(
       mesh = mesh_inla,
       prior.range = get_prior("Range", var = "alpha"),
@@ -825,9 +608,11 @@ run_inlabru <- function(spp) {
 
     for (i in 1:length(pc_vars)) {
       v <- pc_vars[[i]]
-      if(str_detect(v, "[PC,PLS]\\d{2}")){
+      if (str_detect(v, "[PC,PLS]\\d{2}")) {
         mt <- v |> str_remove("\\d+") |> str_to_lower()
-        } else{mt <- "_top"}
+      } else {
+        mt <- "_top"
+      }
       r <- range(df_std[[v]])
       assign(
         paste0("spde_", v),
@@ -882,7 +667,7 @@ run_inlabru <- function(spp) {
       )
     }
     pc_prec <- list(prior = "pcprec", param = c(1, 0.1))
-    
+
     # # Experimental top variables --------------------------
     # if(exists("included_continuous")){
     #   for (i in 1:length(included_continuous)) {
@@ -900,14 +685,9 @@ run_inlabru <- function(spp) {
     #       )
     #     )
     #   }
-    
   }
 
-  
- 
-
-  
-    # the_spde2 <- the_spde
+  # the_spde2 <- the_spde
   # iid prior
 
   # pcv <- pc_vars
@@ -973,8 +753,6 @@ run_inlabru <- function(spp) {
       )
     )
 
-  
-  
   comp_str_pls_LINEAR <-
     paste0(
       comp_str_base,
@@ -1059,11 +837,8 @@ run_inlabru <- function(spp) {
       )
     )
   }
-  
-  
-    
-    
-    if(exists("included_continuous")){
+
+  if (exists("included_continuous")) {
     comp_str_top <-
       paste0(
         comp_str_base,
@@ -1078,30 +853,27 @@ run_inlabru <- function(spp) {
           collapse = "+"
         )
       )
-    }
-    
-    if (length(included_factors) > 0) {
-      comp_str_top <- paste0(
-        comp_str_top,
-        " + ",
-        paste0(
-          "factor_cov_",
-          included_factors,
-          "(",
-          included_factors,
-          ", model = 'factor_contrast'",
-          ")",
-          collapse = "+"
-        )
+  }
+
+  if (length(included_factors) > 0) {
+    comp_str_top <- paste0(
+      comp_str_top,
+      " + ",
+      paste0(
+        "factor_cov_",
+        included_factors,
+        "(",
+        included_factors,
+        ", model = 'factor_contrast'",
+        ")",
+        collapse = "+"
       )
-    }
-    
-  if(exists("comp_str_top")){
+    )
+  }
+
+  if (exists("comp_str_top")) {
     com_top_vars <- as.formula(comp_str_top)
   }
-  
-  
-  
 
   comp_pca <- as.formula(comp_str_pca)
   comp_pls <- as.formula(comp_str_pls)
@@ -1119,8 +891,6 @@ run_inlabru <- function(spp) {
 
   # formula, with "." meaning "add all the model components":
   formula <- y ~ .
-
-  
 
   library(inlabru)
   flush.console()
@@ -1142,6 +912,7 @@ run_inlabru <- function(spp) {
             control.compute = list(waic = TRUE, cpo = FALSE),
             control.inla = list(
               int.strategy = "eb",
+              control.vb = list(emergency = 30),
               strategy = "adaptive"
             ),
             verbose = F
@@ -1158,50 +929,52 @@ run_inlabru <- function(spp) {
   }
 
   res_tbl <- tribble(
-    ~name,
-    ~family_,
-    ~comps_,
-    "poisson_pca",
-    "poisson",
-    (comp_pca),
-    "poisson_pca_linear",
-    "poisson",
-    (comp_pca_linear),
-    "poisson_pls",
-    "poisson",
-    (comp_pls),
-    "poisson_pls_linear",
-    "poisson",
-    (comp_pls_linear),
-    "zip_pca",
-    "zeroinflatedpoisson1",
-    (comp_pca),
-    "zip_pca_linear",
-    "zeroinflatedpoisson1",
-    (comp_pca_linear),
-    "zip_pls",
-    "zeroinflatedpoisson1",
-    (comp_pls),
-    "zip_pls_linear",
-    "zeroinflatedpoisson1",
-    (comp_pls_linear),
-    'poisson_sp',
-    "poisson",
-    (comp_simple),
-    "zip_sp",
-    "zeroinflatedpoisson1",
+    ~name                  ,
+    ~family_               ,
+    ~comps_                ,
+    "poisson_pca"          ,
+    "poisson"              ,
+    (comp_pca)             ,
+    "poisson_pca_linear"   ,
+    "poisson"              ,
+    (comp_pca_linear)      ,
+    "poisson_pls"          ,
+    "poisson"              ,
+    (comp_pls)             ,
+    "poisson_pls_linear"   ,
+    "poisson"              ,
+    (comp_pls_linear)      ,
+    "zip_pca"              ,
+    "zeroinflatedpoisson1" ,
+    (comp_pca)             ,
+    "zip_pca_linear"       ,
+    "zeroinflatedpoisson1" ,
+    (comp_pca_linear)      ,
+    "zip_pls"              ,
+    "zeroinflatedpoisson1" ,
+    (comp_pls)             ,
+    "zip_pls_linear"       ,
+    "zeroinflatedpoisson1" ,
+    (comp_pls_linear)      ,
+    'poisson_sp'           ,
+    "poisson"              ,
+    (comp_simple)          ,
+    "zip_sp"               ,
+    "zeroinflatedpoisson1" ,
     (comp_simple)
   ) #
-  
-  if(exists("com_top_vars")){
+
+  if (exists("com_top_vars")) {
     res_tbl <- bind_rows(
       res_tbl,
-      tibble( name = c("poisson_top", "zip_top"),
-              family_ = c("poisson", "zeroinflatedpoisson1"),
-              comps_ = c(list(com_top_vars), list(com_top_vars)))
+      tibble(
+        name = c("poisson_top", "zip_top"),
+        family_ = c("poisson", "zeroinflatedpoisson1"),
+        comps_ = c(list(com_top_vars), list(com_top_vars))
+      )
     )
   }
-  
+
   if (run_a2) {
     # res_sp <- run_mod('poisson', comp_simple)
     # res <- run_mod('poisson', comp)
@@ -1210,7 +983,6 @@ run_inlabru <- function(spp) {
   # res_wi_year <- pmap(res_tbl[7, ], run_mod)
   res_map <- pmap(res_tbl, run_mod)
   names(res_map) <- res_tbl$name
- 
 
   get_waic <- function(mod_list, mod_names, criterion = "WAIC") {
     is_good <- map(
@@ -1263,13 +1035,11 @@ run_inlabru <- function(spp) {
 
   # Model testing -----------------------
   waic_res <- get_waic(res_map, res_tbl$name)
-  write_csv(waic_res, g("{out_dir}/waic_{spp}_with_linear.csv"))
+  write_csv(waic_res, g("{out_dir}/waic_{spp_dir}_with_linear.csv"))
   res <- res_map[[waic_res$Model[[1]]]]
-  write_rds(res, g("{out_dir_tmp}/{spp}_inlabru_model.rds"))
+  write_rds(res, g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds"))
 
   plot_posteriors <- function(name, what) {
-    
-    
     r <- map(
       res_tbl$name,
       ~ {
@@ -1327,12 +1097,15 @@ run_inlabru <- function(spp) {
   pst_plots <-
     pmap(pst_plot_tbl, plot_posteriors)
 
-  map(
+  save_plot_safe <- safely(function(.x) {
+    ggsave(plot = pst_plots[[.x]], g("{out_dir}/posterior_plot_{.x}.jpeg"))
+  })
+  walk(
     1:nrow(pst_plot_tbl),
-    ~ ggsave(plot = pst_plots[[.x]], g("{out_dir}/posterior_plot_{.x}.jpeg"))
+    save_plot_safe
   )
 
-    gen_summary_table_ <- function(name, mod_list) {
+  gen_summary_table_ <- function(name, mod_list) {
     if (!is_null(mod_list[[name]]$error)) {
       return(NULL)
     }
@@ -1364,14 +1137,22 @@ run_inlabru <- function(spp) {
     separate(
       var,
       into = c("var_type", "cov"),
-      sep = "( for )|(?<=(_cov)_)",
+      sep = "( for )|(?<=(_cov)_)",extra = 'merge',
       remove = F
     )
+  write_csv(
+    x = summary_table_,
+    g("{out_dir}/{spp_dir}_model_parameter_summary.csv")
+  )
   if (exists("mod_pars")) {
     compare_priors <-
       summary_table_ |>
       mutate(mod = "RoF") |>
-      bind_rows(mod_pars |> mutate(mod = "A2") |> mutate(model = str_replace(model, "pois_top", "poisson_top"))) |>
+      bind_rows(
+        mod_pars |>
+          mutate(mod = "A2") |>
+          mutate(model = str_replace(model, "pois_top", "poisson_top"))
+      ) |>
       filter(str_detect(var, "alpha|t2se|doy|kappa")) |>
       ggplot(aes(mod, x0_5quant)) +
       facet_wrap(~var, scales = "free_y", labeller = label_wrap_gen()) +
@@ -1379,21 +1160,16 @@ run_inlabru <- function(spp) {
       geom_point()
 
     ggsave(
-      g("{out_dir}/{spp}_model_parameter_compare.jpeg"),
+      g("{out_dir}/{spp_dir}_model_parameter_compare.jpeg"),
       compare_priors,
       width = 12,
       height = 8
     )
   }
 
-  write_csv(
-    x = summary_table_,
-    g("{out_dir}/{spp}_model_parameter_summary.csv")
-  )
-
   if (!run_a2) {
     ff_counts <- paste0(
-      "Intercept + RecLength  + t2se + time_group + doy +",#+ o
+      "Intercept + RecLength  + t2se + time_group + doy +", #+ o
       paste0("spat_cov_", pc_vars, collapse = "+"),
       "+ alpha"
     ) #|>
@@ -1434,7 +1210,7 @@ run_inlabru <- function(spp) {
       res,
       x4pred_t2se,
       ~ {
-        expect <- Intercept +  time_group + t2se + RecLength#o +
+        expect <- Intercept + time_group + t2se + RecLength #o +
         1 - dpois(0, exp(expect))
         # exp(expect)
       },
@@ -1497,7 +1273,7 @@ run_inlabru <- function(spp) {
       res,
       x4pred_doy,
       ~ {
-        expect <- Intercept +  doy + RecLength#o +
+        expect <- Intercept + doy + RecLength #o +
         1 - dpois(0, exp(expect))
       },
 
@@ -1584,7 +1360,5 @@ run_inlabru <- function(spp) {
   #   ylab("Intensity") +
   #   facet_wrap(~event_gr, scales = 'free')
 
-  
-  
   gc()
 }

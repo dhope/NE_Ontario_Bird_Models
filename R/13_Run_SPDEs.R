@@ -1,6 +1,7 @@
 run_a2 <- FALSE
 source("R/08_INLA_SPDE.R")
-
+library(futurize)
+e <- as.list(.GlobalEnv)
 rm_spp_pat <- c("Gull", "Loon", "Mallard", "Swan", "Harrier", "Eagle", "Teal", "Pintail", "Goldeneye", "Merganser", "Duck", "Merlin",
                 "Scoter", "Tern", "Wigeon", "Gadwall") # Already ran these in testing
 # spp_to_run <-
@@ -13,7 +14,11 @@ rm_spp_pat <- c("Gull", "Loon", "Mallard", "Swan", "Harrier", "Eagle", "Teal", "
 #   arrange(desc(n_sites)) |> 
 #   filter(str_detect(species_name_clean, glue::glue_collapse(rm_spp_pat, sep = "|"), negate=T) &n_sites>10) |> 
 #   filter(species_name_clean!="Song Sparrow")
-spp_to_run <- tibble(file_size=brt_spp_dat_loc |> list.files(full.names = T) |> file.size(),
+brt_spp_dat_loc <- brt_spp_dat_loc|> str_remove("BRT4")
+BRT_output_loc <- BRT_output_loc |> str_replace("BRT4", "BRT3")
+
+
+spp_to_run <- tibble(file_size=  brt_spp_dat_loc|> list.files(full.names = T) |> file.size(),
                      species_name_clean=
                        brt_spp_dat_loc |> list.files() |> str_remove(".rds") |> str_replace_all("_", " ") ) |> arrange(file_size) |>
   filter(str_detect(species_name_clean, glue::glue_collapse(rm_spp_pat, sep = "|"), negate=T))
@@ -75,12 +80,12 @@ missed <- spp_brt_run[!str_remove(spp_brt_run, "\\'") %in% spp_comp_inla]
 srs <- purrr::safely(run_inlabru)
 time_limit <- 0.5 * 60 * 60
 if (str_detect(osVersion, "Windows")) {
-  future::plan(future::multisession, workers = 32)
+  future::plan(future::multisession, workers = 8)
 } else {
-  future::plan(future::multicore, workers = 32)
+  future::plan(future::multicore, workers = 8)
 }
-inla.setOption(inla.timeout = time_limit, num.threads = 32)
-x <- purrr::map(spp_brt_run, srs, .progress = T)
+inla.setOption(inla.timeout = time_limit, num.threads = 4)
+x <- map(missed, srs, env_=e) |> futurize()
 future::plan(future::sequential)
 sink("output.log")
 print(x)

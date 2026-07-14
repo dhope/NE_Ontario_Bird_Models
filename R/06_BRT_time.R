@@ -114,7 +114,7 @@ if(str_detect(osVersion, "Windows")){
 
 
 
-run_brt <- function(spp) {
+run_brt <- function(spp, predict_only=FALSE) {
   spp_dir <- str_replace_all(spp, ' ', '_') |> str_remove_all("\\'")
   out_dir_spatial <- g(
     "{BRT_output_loc_spatial}/{spp_dir}"
@@ -137,14 +137,14 @@ run_brt <- function(spp) {
     dat_file <- g("{brt_spp_dat_loc}/{str_replace_all(spp, ' ', '_') }.rds")
   }
   
-  df_std <- read_rds(dat_file)
+  df_std <- read_rds(dat_file)# |> filter(y<=5)
 n_sites <- df_std |> filter(y>0) |> pull(site_id) |> n_distinct()
   if(n_sites<=20){
     cat(glue::glue("Insufficient data, skipping {spp}\n\r"))
     file.create(glue::glue("{out_dir}/skipped_due_insufficient_data.txt"))
     
     return(NULL)}
-if(file.exists(model_rds_file)||file.exists(model_rds_file_old)){
+if((file.exists(model_rds_file)||file.exists(model_rds_file_old) )&&isFALSE(predict_only)){
   cat(glue::glue("Model rds already exists, skipping {spp}\n\r"))
   file.create(glue::glue("{out_dir}/skipped_due_to_existing_rds.txt"))
   return(NULL)
@@ -157,6 +157,7 @@ if(str_detect(osVersion, "Windows")){
   plan(multicore, workers = 32, gc=T)
 }
 
+if(isFALSE(predict_only)){
   cat(glue::glue("Starting Model runs for {spp}\n"))
   no_off <- all(is.na(df_std$QPAD_offset))
   xgb_spec <- function(no_off, n_trees) {
@@ -220,6 +221,7 @@ if(str_detect(osVersion, "Windows")){
     # update_role(QPAD_offset, new_role = "offset") %>%
 
     step_rm(
+      contains("geometry"),
       contains("location"),
       contains("species_name_clean"),
       contains("site_id"),
@@ -237,9 +239,9 @@ if(str_detect(osVersion, "Windows")){
                 NFIS_is_forest_500 = #across(contains("NFIS_age_500"),
                                             factor(ifelse(is.na(NFIS_age_100), 1, 0)),
     ) |> 
-    step_novel() |>
-    step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
-    step_zv(all_predictors(), -starts_with('QPAD_offset')) |>
+    step_novel(,all_factor_predictors(),-contains('fire'), -contains('harvest')) |>
+    step_unknown(all_factor_predictors(),-contains('fire'), -contains('harvest'), -starts_with('QPAD_offset')) |>
+    step_zv(all_predictors(), -contains('year')) |>
     step_impute_linear(contains("Climate"),
                     impute_with = imp_vars(c(X,Y) ) ) |> 
     step_impute_median(all_numeric_predictors()) |>
@@ -247,14 +249,20 @@ if(str_detect(osVersion, "Windows")){
       across(
         contains("rec30") & where(is.factor) & contains("fire"),
         ~ case_when(
+          ( is.na(.x)|.x=="unknown"|.x=="new") ~ 
+            as.numeric(as.character(year)) - 1955,
           as.numeric(as.character(.x)) == 0 ~
             as.numeric(as.character(year)) - 1955,
-          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+          as.numeric(as.character(.x)) != 0 ~
+            as.numeric(as.character(year)) - as.numeric(as.character(.x)),
+          TRUE ~ NA_real_
         )
       ),
       across(
         contains("rec30") & where(is.factor) & contains("harvest"),
         ~ case_when(
+          ( is.na(.x)|.x=="unknown"|.x=="new") ~ 
+            as.numeric(as.character(year)) - 1980,
           as.numeric(as.character(.x)) == 0 ~
             as.numeric(as.character(year)) - 1980,
           TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
@@ -321,6 +329,12 @@ if(str_detect(osVersion, "Windows")){
     )
    
   })
+  
+  for(i in 1:10){
+    x_ <-  st_drop_geometry( vb_folds$splits[[i]]$data)
+    vb_folds$splits[[i]]$data <- x_
+  }
+  
   xgb_param <-
     xgb_wf %>%
     extract_parameter_set_dials() %>%
@@ -414,13 +428,30 @@ if(str_detect(osVersion, "Windows")){
   # plan(sequential)
   cat(glue::glue("Final model fit for {spp}\n"))
 
- 
+} else{
+  fit_workflow <- readRDS( model_rds_file)
+}
+
+t_pred_calc <- 
+df_std |> filter(y>0) |> 
+  summarize(across(.cols = c(t2se, doy),
+                   .fns = list(min =min, max =max)),
+            .by = event_gr) |> 
+  rowwise() |> 
+  mutate(pred = list(
+  expand_grid(t2se = seq(t2se_min-10, t2se_max+10, by = 1),
+              doy = seq(doy_min-5, doy_max+5, by = 1)))) |> 
+  select(event_gr, pred) |> unnest(pred)
+
+
     t_pred <-
-      expand_grid(
-        t2se = seq(-60, 240),
-        event_gr = c("Dawn", "Dusk"),
-        doy = 122:202
-      ) |> bind_cols(df_std |> select(-t2se, -doy) |> 
+      # expand_grid(
+      #   t2se = seq(-60, 240),
+      #   event_gr = unique(df_std$event_gr),#c("Dawn", "Dusk"),
+      #   doy = 122:202
+      # ) |> 
+      t_pred_calc |> 
+      bind_cols(df_std |> select(-t2se, -doy) |> 
                        summarize(across(where(is.numeric), \(x) median(x, na.rm=T)) )
                       ) |> 
       bind_rows(df_std |> select(-t2se, -doy) ) |>
@@ -429,6 +460,7 @@ if(str_detect(osVersion, "Windows")){
     pred_t <- predict(fit_workflow, t_pred)
     t_pred$.pred <- pred_t$.pred
 
+    
     time_plot <- ggplot(t_pred, aes(t2se, .pred, colour = event_gr)) +
       stat_summary(fun = 'mean', geom = 'line', aes(group = event_gr)) +
       rcartocolor::scale_colour_carto_d() +
@@ -436,7 +468,7 @@ if(str_detect(osVersion, "Windows")){
 
     doy_plot <- ggplot(
       t_pred,
-      aes(ymd("2025-01-01") + doy, .pred, colour = event_gr)
+      aes(ymd("2025-01-01") + doy-1, .pred, colour = event_gr)
     ) +
       stat_summary(fun = 'mean', geom = 'line', aes(group = event_gr)) +
       rcartocolor::scale_colour_carto_d() +
@@ -446,7 +478,7 @@ if(str_detect(osVersion, "Windows")){
       plot = time_plot / doy_plot,
       file = g("{out_dir}/{spp}_time_date_marginal.jpeg")
     )
-
+    if(isFALSE(predict_only)){
     vi_tbl <- vip::vi(fit_workflow)
     write_csv(vi_tbl, g("{out_dir}/{spp_dir}_time_vi.csv"))
 
@@ -500,6 +532,7 @@ if(str_detect(osVersion, "Windows")){
       height = 6
     )
   })
+    }
 
   # run_brt_preds <- function(spp) {
   # Predict ------------------------------
@@ -516,11 +549,21 @@ if(str_detect(osVersion, "Windows")){
                              n=1,with_ties = F) |> 
    pull(event_gr)
   
-  doy_used <- t_pred |> filter( event_gr == period_to_use) |> 
+  doy_used <- t_pred |> filter( event_gr == period_to_use) |>
+     filter(doy>=(min(doy)+7) & doy<= (max(doy)-7) ) |> 
     summarize(.pred = median(.pred), .by = c(doy)) |> 
     slice_max( order_by = .pred, 
                n=1,with_ties = F) |> 
     pull(doy)
+  t2se_max <- t_pred |> filter(event_gr == period_to_use) |> 
+    mutate(t2se_round = round(t2se/30)*30) |> 
+    filter(t2se>=(min(t2se)+30) & doy<= (max(t2se)-60) ) |> 
+    summarize(.pred = median(.pred), .by = c(t2se_round)) |> 
+    slice_max( order_by = .pred, 
+               n=1,with_ties = F) |> 
+    pull(t2se_round)
+    
+    
   
 
 
@@ -553,13 +596,13 @@ if(str_detect(osVersion, "Windows")){
     new_data = preds |>
       mutate(
         doy = doy_used,
-        t2se = 0, #30,
+        t2se = t2se_max, #30,
         Time_period = period_to_use,
         year = factor(2026),
-        event_gr = "Dawn",
+        event_gr = period_to_use,#"Dawn",
         source = NA,
         collection = NA,
-        type = NA,
+        type = "ARU recording",
         Rec_length = (5),
         SiteN = NA,
         site_id =NA,
@@ -578,6 +621,7 @@ if(str_detect(osVersion, "Windows")){
   toc()
 
   # plan(sequential)
+  write_csv(tibble(spp, t2se_max, period_to_use, doy_used),g("{out_dir}/prediction_parameters.csv") )
   write_rds(p, glue::glue("{prediction_layer_loc}/{spp_dir}_time_pred_brt.rds"))
   r_pred <- rast(g("{prediction_layer_loc}/2025-10-21_prediction_rasters.nc")) #2025-02-10_prediction_rasters.nc")
   aoi <- read_rds(g("output/rds/{date_compiled}_Area_of_focus_mesh.rds"))

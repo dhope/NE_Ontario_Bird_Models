@@ -160,6 +160,10 @@ inla_tests <- function(spp){
   #                    glue::glue_collapse(sep = " + ")}')
   
   
+  fact_vars <- str_split_1(ff_g, "\\+") |> 
+    str_remove_all(" ") |> 
+    str_subset("factor") |> 
+    str_remove("factor_cov_")
   # sum(!is.na(pca_preds))
   if(str_detect(ff_g,"_PLS")) {
     p_vars <- pls_vars
@@ -170,7 +174,8 @@ inla_tests <- function(spp){
       str_remove_all(" ") |> 
       str_subset("spat_cov") |> 
       str_remove("spat_cov_") } else{
-    p_vars <- "project"} 
+    p_vars <- "project"}
+  p_vars <- c(p_vars, fact_vars) |> unique()
   
   site_map <- read_rds(
   g("{out_dir_tmp}/site_map.rds")
@@ -217,6 +222,7 @@ inla_tests <- function(spp){
       doy,
       site_id,
       year,
+      type,
       # sum_count_no_tmtt,
       geometry,
       test_group,
@@ -232,13 +238,13 @@ inla_tests <- function(spp){
     #                X, Y,on_er,#clip_length_min,#offset,
     #               which(names(. )%in% p_vars)) %>%
     dplyr::select(test_group, site_id,RL,event_gr,
-                  year,doy,t2se,year,y,X,Y,
+                  year,doy,t2se,year,y,X,Y,type,
                   all_of(p_vars)) %>% 
     bind_cols(sd_mn |> 
                 filter(variable %in% names(.) & variable !="t2se") |> 
                 pivot_wider(names_from = variable,
                             values_from = c(sd2, mn))) |> 
-    mutate(across(c(all_of(p_vars),
+    mutate(across(c(all_of(p_vars),-where(~!is.numeric(.x)),
       # across(c(starts_with("PLS"),starts_with("PC"),
                doy),
            ~{(.x - get(glue::glue("mn_{cur_column()}")) )/
@@ -297,7 +303,6 @@ inla_tests <- function(spp){
   d_test <- scaled_prediction[scaled_prediction$test_group==test_group_,] |> 
     mutate(rn = as.character(row_number()))
     }
-    
     
   if(fam!="zeroinflatedpoisson1"){
   preds <- inlabru::generate(res, newdata=d_test,formula = ff,
@@ -607,6 +612,7 @@ inla_tests <- function(spp){
   
   
 }
+  # xxx <- c("Spatial", "Site")
   xxx <- c("Train","Spatial", "Site")
   # mirai::daemons(3)
   all_tests <- map(xxx,gen_inla_test)#,  .parallel = TRUE )
@@ -686,14 +692,29 @@ spp_comp_inla <-
 
 
 
-m <- walk(spp_comp_inla[-1], safely(inla_tests))
+comp <- 
+  list.files(INLA_output_loc, "iter_metrics_", recursive = T) |> 
+  str_subset("^A2/", negate = !run_a2) |>
+  str_subset("^A2/\\w{4}/", negate = T) |>
+  str_subset("\\s", negate = T) |>
+  str_subset("CONI_prev", negate = T) |>
+  str_extract(glue::glue("{ifelse(run_a2, '(?<=A2/)','^')}\\w+(_)*\\w+(?=/)")) |>
+  str_replace_all("_", " ") |> 
+  unique() |>
+  sort() 
+
+missed <- spp_comp_inla[!spp_comp_inla %in% comp]
+
+m <- map(missed, safely(inla_tests))
 
 
-# library(tidyverse)
+library(tidyverse)
 # 
-# all_spp_mat <- 
-# list.files(INLA_output_loc, pattern = "median_metrics", recursive = T, full.names = T) |> 
-#   read_csv()
+all_spp_mat <-
+list.files(INLA_output_loc, pattern = "median_metrics", recursive = T, full.names = T) |>
+  str_subset("\\s", negate = T) |> 
+  read_csv()
+readr::write_csv(all_spp_mat, "output/2026-07-13_INLA_metrics_combined.csv")
 # 
 # ggplot(all_spp_mat,
 #        aes( factor(test, levels = c("Train", "Site", "Spatial")),roc_auc,
@@ -704,5 +725,27 @@ m <- walk(spp_comp_inla[-1], safely(inla_tests))
 #   scale_colour_viridis_d()
 
 
+aic_res <- 
+list.files(INLA_output_loc, pattern = "waic", recursive = T, full.names = T)|>
+  str_subset("/A2/", negate = T) |> 
+  str_subset("/[:upper:]{4}/", negate = T) |> 
+  str_subset("\\s", negate = T) |>
+  map(~{read_csv(.x) |> mutate(species = 
+  fs::path_dir(.x) |> 
+  fs::path_file() )}) 
+  #
 
+arrow::write_parquet(bind_rows(aic_res), "output/waic_res.parquet")
+
+
+mod_pars <- 
+list.files(INLA_output_loc, pattern = "_model_parameter_summary", recursive = T, full.names = T)|>
+  str_subset("/A2/", negate = T) |> 
+  str_subset("/[:upper:]{4}/", negate = T) |> 
+  str_subset("\\s", negate = T) |>
+  map(~{read_csv(.x) |> mutate(species = 
+                                 fs::path_dir(.x) |> 
+                                 fs::path_file() )})
+
+arrow::write_parquet(bind_rows(mod_pars), "output/model_parameters_res.parquet")
 

@@ -24,7 +24,7 @@ spp_comp_inla <-
 
 
 comp <- 
-list.files("D:/SPATIAL/RoF_Models/INLA3", ".tif", recursive=T) |> 
+list.files("D:/SPATIAL/RoF_Models/INLA4", ".tif", recursive=T) |> 
   str_subset("^A2/", negate = !run_a2) |>
   str_subset("^A2/\\w{4}/", negate = T) |>
   str_subset("\\s", negate = T) |>
@@ -39,7 +39,7 @@ missed <- spp_comp_inla[!spp_comp_inla %in% comp]
 
 rp <- safely(run_predictions)
 x <- map(missed, rp,load_rds = F, gen_map_outputs = TRUE)
-sink("output_pred_inla.log")
+sink("output_pred_inla2.log")
 print(x)
 sink()
 

@@ -1,6 +1,39 @@
+run_a2 <- FALSE
 source("R/06_BRT_time.R")
+source("R/__globals.R")
+spp_cov_date <- "2026-02-16"
+spp_cov_file <- g("output/rds/{spp_cov_date}_spatial_covariates_data.rds")
+source("R/__data_prep.R")
+print("Data prep complete--------------------------------")
 use_training_data <- FALSE
 if (!use_training_data) {
+
+  
+  extra_tests <- read_rds(g("{rds_data_loc}/../all_events.rds") )|> 
+    filter(str_detect(project, "Crescent"))
+  
+  extra_counts <- read_rds(g("{rds_data_loc}/../counts.rds") )|> 
+    filter(str_detect(project, "Crescent"))
+  
+  extra_locs <- locs_extra <- read_rds(g("{rds_data_loc}/../locations.rds") )|> 
+    filter(str_detect(project, "Crescent"))
+  
+  
+  
+  extra_spat_var <- 
+    read_rds("output/rds/2026-04-08_spatial_covariates_data_extra.rds") |> 
+    mutate( d2O = read_rds(g("output/rds/2026-04-08_dist2ocean_extra.rds"))) |> 
+    bind_cols(dplyr::select(
+      extra_locs,
+      site_id, geometry) ) |> 
+    distinct() |>
+    st_as_sf() %>%
+    bind_cols(as_tibble(st_coordinates(.))) |>
+    dplyr::select(where(~ sum(is.na(.x)) != length(.x))) 
+  spatial_cov <- bind_rows(spatial_cov, extra_spat_var)
+  
+  
+  
   test_training_data <- read_rds(g(
     "output/{date_compiled}_test_training_data.rds"
   ))
@@ -31,7 +64,7 @@ if (!use_training_data) {
     filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T) &
              (site_id %in% test_locations$site_id | event_id %in%
                 test_recordings$event_id) ) |>
-    
+    bind_rows(extra_tests) |> 
     mutate(
       test_group = ifelse(site_id %in% test_locations$site_id, "Spatial", "Site"),
       Time_period =dplyr::case_when(
@@ -50,13 +83,17 @@ if (!use_training_data) {
       Rec_length = factor(as.numeric(round(dur,1))),
       recording_id = as.numeric(recording_id)) %>%
   left_join(.,
-  individual_locs |> filter(site_id %in% .$site_id) |> 
+  individual_locs |> filter(site_id %in% .$site_id) |>
+    bind_rows(extra_locs |>st_as_sf() |>  distinct(site_id,geometry) ) |> 
     st_join(ontario_ez |> dplyr::select(on_er = ZONE_NAME)    ) ,
   by = join_by(site_id))
   
   # # rm(test_training_data, train_locs)
   # 
   counts <- read_rds(g("{rds_data_loc}/counts.rds")) |>
+    filter(event_id %in% recordings$event_id ) |>
+    filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |>
+    bind_rows(extra_counts) |> 
     dplyr::select(
       event_id,
       location,
@@ -69,8 +106,7 @@ if (!use_training_data) {
       total_count_with_tmtt
     ) |>
     replace_na(list(collection="WildTrax")) |>
-    filter(event_id %in% recordings$event_id ) |>
-    filter(str_detect(project, "(Extraction)|(Nocturnal)|(Resample)",negate=T)) |>
+   
     # dplyr::select(event_id, site_id,  project, 
     #               species_name_clean,total_count,
     #               common_id,
@@ -149,9 +185,11 @@ if (!use_training_data) {
   #     )
   #   ) |>
   #   filter(!is.na(y))
+  print("Loaded extra sites--------------------------------")
 }
 test_out_of_sample <- function(spp, write_to_file) {
-  spp_dir <- str_replace(spp, " ", "_")
+  tic(g("{spp}:"))
+  spp_dir <- str_replace_all(spp, " ", "_")
   out_dir_spatial <- g(
     "{BRT_output_loc_spatial}/{spp_dir}"
   )
@@ -162,10 +200,11 @@ test_out_of_sample <- function(spp, write_to_file) {
 
   list2env(prep_brt_data(spp), environment())
   if (use_training_data) {
+    df_std <- read_rds(g("{brt_spp_dat_loc}/{spp_dir}.rds"))
     df_std$test_group <- "Train"
   }
 
-  fit_workflow <- readRDS(glue::glue("{bundle_locs}/{spp}_time_bundle.rds")) #)
+  fit_workflow <- readRDS(glue::glue("{bundle_locs}/{spp_dir}_time_bundle.rds")) #)
   # bundle::unbundle(
 
   gen_tests <- function(test_group_) {
@@ -339,32 +378,60 @@ test_out_of_sample <- function(spp, write_to_file) {
       }
     })
   }
-
+  toc()
   if (!write_to_file) {
     return(output_test)
   }
 }
 
+rm_spp_pat <- c("Gull", "Loon", "Mallard", "Swan", "Harrier", "Eagle", "Teal", "Pintail", "Goldeneye", "Merganser", "Duck", "Merlin",
+                "Scoter", "Tern", "Wigeon", "Gadwall") # Already ran these in testing
+#
+spp_to_run <- tibble(
+                     species_name_clean=
+                       bundle_locs |> 
+                       list.files(full.names = F, recursive = T,
+                                  "_time_bundle.rds") |>
+                       str_remove("_time_bundle.rds") |> 
+                       str_replace_all("_", " ") ) |> 
+  # arrange(file_size) |>
+  filter(str_detect(species_name_clean, 
+                    glue::glue_collapse(rm_spp_pat, sep = "|"),
+                    negate=T)
+         & str_detect(species_name_clean, "^\\w{4}$", negate=T))
+
+comp_metrics <- map(str_replace_all(spp_to_run$species_name_clean, "\\s", "_"), 
+                    ~{
+                      file.exists(g("{BRT_output_loc}/{.x}/{ifelse(use_training_data,'train_','')}test_metrics.csv"))
+                    } ) |> list_c()
+missing <- spp_to_run$species_name_clean[!comp_metrics]
 
 list_modes <- list.files(bundle_locs, pattern = "\\w{4}_time_bundle.rds") |>
   str_extract("\\w{4}(?=_)")
 
 evaluation_results <- map(
-  list_modes[59:length(list_modes)], #[(51+21):length(list_modes)],
+  missing,
+  # spp_to_run$species_name_clean[-c(1,2)], #[(51+21):length(list_modes)],
   # str_subset(list_modes, "PAWA|ATSP", negate = T),
-  test_out_of_sample,
+  safely(test_out_of_sample),
   write_to_file = T
 ) # ATSP needs to be run again
-
+# e <- evaluation_results |> transpose() |> pluck( "error", .default = "No error")
+# ii <- map_dbl(e, ~ifelse(is.null(.x), 0,1))
+# spp_to_run$species_name_clean[ii==1]
 
 metrics <-
-  map(
+  # map(
     list.files(
       BRT_output_loc,
       "test_metrics.csv",
       full.names = T,
       recursive = T
-    ),
-    read_csv
-  ) |>
-  list_rbind()
+    ) |> stringr::str_subset("\\s", negate=T) |>
+    readr::read_csv()
+# 
+readr::write_csv(metrics, "output/2026-04-30_BRT_metrics_combined.csv")
+
+
+
+  

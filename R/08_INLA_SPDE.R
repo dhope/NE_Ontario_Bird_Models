@@ -93,8 +93,15 @@ source("R/__data_prep.R")
 # na_pops_offsets <- read_rds("output/na_pops_offsets.rds") |>
 #   rename(species = spp)
 
-run_inlabru <- function(spp) {
+run_inlabru <- function(spp, env_=NULL) {
+  if(!is.null(env_)){list2env(env_, environment())
+    rm(env_)}
   print(glue::glue("Running {spp} --------------------------------------"))
+  if (str_detect(osVersion, "Windows")) {
+    source("R/__paths.R")
+  } else {
+    source("R/__paths_linux.R")
+  }
   spp_dir <- str_replace_all(spp, " ", "_")|> str_remove_all("\\'")
   out_dir_spatial <- g(
     "{INLA_output_loc_spatial}/{out_dir_app}/{spp_dir}"
@@ -244,33 +251,37 @@ run_inlabru <- function(spp) {
       contains('geometry')
     ) |> #,X,Y ) |>
     step_mutate(
-      NFIS_is_forest_100 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+      NFIS_is_forest_100 = factor(if_else(is.na(NFIS_age_100), 1, 0)),
       #across(contains("NFIS_age_500"),
-      NFIS_is_forest_500 = factor(ifelse(is.na(NFIS_age_100), 1, 0)),
+      NFIS_is_forest_500 = factor(if_else(is.na(NFIS_age_500), 1, 0)),
     ) |>
     update_role(site_id, new_role = "id") %>%
     update_role(mean_count, new_role = "outcome") %>%
-    step_novel(all_factor_predictors()) |>
-    step_unknown(all_factor_predictors(), -starts_with('QPAD_offset')) |>
-    step_zv(all_predictors()) |>
+    step_novel(,all_factor_predictors(),-contains('fire'), -contains('harvest')) |>
+    step_unknown(all_factor_predictors(),-contains('fire'), -contains('harvest'), -starts_with('QPAD_offset')) |>
+    step_zv(all_predictors(), -contains('year')) |>
     step_impute_linear(contains("Climate"), impute_with = imp_vars(c(X, Y))) |>
     step_rm(X, Y) |>
     step_impute_median(all_numeric_predictors()) |>
     step_mutate(
       across(
-        contains("rec30") & where(is.factor) & contains("fire"),
+        contains("rec30") & contains("fire"),
         ~ case_when(
-          is.na(.x) ~ 
+         ( is.na(.x)|.x=="unknown"|.x=="new") ~ 
             as.numeric(as.character(year)) - 1955,
           as.numeric(as.character(.x)) == 0 ~
             as.numeric(as.character(year)) - 1955,
-          TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
+          as.numeric(as.character(.x)) != 0 ~
+            as.numeric(as.character(year)) - as.numeric(as.character(.x)),
+          TRUE ~ NA_real_
         )
       ),
       across(
         contains("rec30") & where(is.factor) & contains("harvest"),
         ~ case_when(
-          (as.numeric(as.character(.x)) == 0 | is.na(.x)) ~
+          ( is.na(.x)|.x=="unknown"|.x=="new") ~ 
+            as.numeric(as.character(year)) - 1980,
+          as.numeric(as.character(.x)) == 0 ~
             as.numeric(as.character(year)) - 1980,
           TRUE ~ as.numeric(as.character(year)) - as.numeric(as.character(.x))
         )
@@ -287,9 +298,9 @@ run_inlabru <- function(spp) {
       all_numeric_predictors(),
       sds = 2
     ) |>
-    step_nzv(
+    step_nzv(-contains('year'),
+             -contains("mean_count"),
       all_numeric_predictors(),
-      ,
       -starts_with('QPAD_offset'),
       freq_cut = 95 / 5,
       unique_cut = 2
@@ -301,7 +312,7 @@ run_inlabru <- function(spp) {
     )
 
   pca_rec <- dat_rec %>%
-   step_rm(mean_count) |> 
+   step_rm(contains("mean_count")) |> 
     step_pca(
       all_numeric_predictors(),
       id = "pca",
@@ -321,10 +332,12 @@ run_inlabru <- function(spp) {
   pca_out <- bake(pca_prep, new_data = NULL)
 
   pls_out <- prep(pls_rec) |> bake(new_data = NULL)
+  if(!exists("included_continuous")) included_continuous <- NULL
   basic_out <- prep(dat_rec_base) |>
     bake(new_data = NULL) |>
     dplyr::select(site_id,year, any_of(included_continuous)) |> 
     mutate(year = factor(year))
+ 
 
   # pca <- prcomp(cov[,-1], retx=TRUE, center=TRUE, scale.=TRUE)
   # pca_pred <- predict(pca)
@@ -345,6 +358,7 @@ run_inlabru <- function(spp) {
       y,
       t2se_scaled,
       doy_r,
+      type,
       RL = clip_length_min,
       rec_id,
       SiteN,
@@ -473,7 +487,7 @@ run_inlabru <- function(spp) {
   
   
   
-  rlang::abort("Stopping here")
+  # rlang::abort("Stopping here")
   sd_mn <-
     setup_dat |>
     mutate(year=factor(year)) |> 
@@ -535,16 +549,18 @@ run_inlabru <- function(spp) {
   a2_f <- NULL
   ## Import A2 posteriors for priors
   if (!run_a2) {
-    a2_dir <- (str_replace(out_dir, "///", "/A2/"))
+    a2_dir <- (str_replace(out_dir, "///", "/A2/")) #|> str_replace("INLA4", "INLA3")
     a2_f <- list.files(a2_dir)
     print(a2_f)
   }
 
-  smoother_mesh <- seq(-3, 3, by = 0.1)
+  t2se_scale_range <- c(-1.3, 2.3)#range(df_std$doy_r) + c(-0.3, 0.3)
+  smoother_mesh <- seq(t2se_scale_range[1],t2se_scale_range[2], length.out= 6)
+    #seq(-3, 3, by = 0.1)
   smoother_mesh2 <- seq(-3, 3, by = 0.25)
   mesh1D <- fm_mesh_1d(smoother_mesh, boundary = "free", degree = 2)
   mesh1D2 <- fm_mesh_1d(smoother_mesh2, boundary = "free", degree = 2)
-
+  if(is.null(included_continuous)) rm(included_continuous)
   pc_vars <- c(
     str_subset(names(pca_out)[-1], "^PC\\d"),
     str_subset(names(pls_out)[-1], "^PLS\\d"),
@@ -618,7 +634,7 @@ run_inlabru <- function(spp) {
         paste0("spde_", v),
         inla.spde2.pcmatern(
           fm_mesh_1d(
-            seq(r[[1]] - 0.5, r[[2]] + 0.5),
+            seq(r[[1]] - 0.5, r[[2]] + 0.5, length.out = 6),
             boundary = "free",
             degree = 2
           ),
@@ -657,7 +673,7 @@ run_inlabru <- function(spp) {
         paste0("spde_", pc_vars[[i]]),
         inla.spde2.pcmatern(
           fm_mesh_1d(
-            seq(r[[1]] - 0.5, r[[2]] + 0.5, length.out = 21),
+            seq(r[[1]] - 0.5, r[[2]] + 0.5, length.out = 6),
             boundary = "free",
             degree = 2
           ),
@@ -710,12 +726,12 @@ run_inlabru <- function(spp) {
 
   comp_str_base <-
     paste0(
-      "~  Intercept(1) + ", #o(QPAD_offset, model = 'const') +
+      "~ -1 + surveytype(type, model = 'factor_full') +",# Intercept(1) + ", #o(QPAD_offset, model = 'const') +
       RL_cr,
       t2se_cr,
       yr_cr,
-      "kappa(site, model = 'iid', constr = TRUE, hyper = list(prec = pc_prec)) +
-    doy(doy_r, model = the_spde_doy) +
+      # "kappa(site, model = 'iid', constr = TRUE, hyper = list(prec = pc_prec)) +
+      "doy(doy_r, model = the_spde_doy) +
     alpha(geometry, model = spde) +
          "
     )
@@ -881,14 +897,14 @@ run_inlabru <- function(spp) {
   comp_pca_linear <- as.formula(comp_str_pca_LINEAR)
 
   comp_simple <- as.formula(paste0(
-    "~Intercept(1) + ", ## o(QPAD_offset, model = 'const') +
+    "~ -1 + surveytype(type, model = 'factor_full') +",#Intercept(1) + ", ## o(QPAD_offset, model = 'const') +
     RL_cr,
     t2se_cr,
     "doy(doy_r, model = the_spde_doy) +
-     kappa(site, model = 'iid', constr = TRUE, hyper = list(prec = pc_prec)) +
+
     alpha(geometry, model = spde)  "
   ))
-
+#     kappa(site, model = 'iid', constr = TRUE, hyper = list(prec = pc_prec)) +
   # formula, with "." meaning "add all the model components":
   formula <- y ~ .
 
@@ -913,7 +929,7 @@ run_inlabru <- function(spp) {
             control.inla = list(
               int.strategy = "eb",
               control.vb = list(emergency = 30),
-              strategy = "adaptive"
+              strategy = "laplace" #adaptive"
             ),
             verbose = F
           )
@@ -923,7 +939,7 @@ run_inlabru <- function(spp) {
       },
       error = function(cnd) {
         tictoc::toc()
-        NULL
+        cnd
       }
     )
   }
@@ -1035,13 +1051,18 @@ run_inlabru <- function(spp) {
 
   # Model testing -----------------------
   waic_res <- get_waic(res_map, res_tbl$name)
+  
+  
+  res_map$nb_top <- run_mod(waic_res$Model[[1]], family_ = 'nbinomial', res_tbl$comps_[res_tbl$name==waic_res$Model[[1]]])
+  waic_res <- get_waic(res_map, names(res_map))
   write_csv(waic_res, g("{out_dir}/waic_{spp_dir}_with_linear.csv"))
+  
   res <- res_map[[waic_res$Model[[1]]]]
   write_rds(res, g("{out_dir_tmp}/{spp_dir}_inlabru_model.rds"))
-
+  # browser()
   plot_posteriors <- function(name, what) {
     r <- map(
-      res_tbl$name,
+      waic_res$Model,
       ~ {
         if (is_null(res_map[[.x]]$error)) {
           spde.posterior(res_map[[.x]], name = name, what = what) |>
@@ -1067,7 +1088,7 @@ run_inlabru <- function(spp) {
     }
     if ("q0.5" %in% names(r)) {
       ggplot(r, aes(x, q0.5, colour = mod_type, fill = mod_type)) +
-        geom_ribbon(aes(ymin = `q0.025%`, ymax = `q0.975%`), alpha = 0.2) +
+        geom_ribbon(aes(ymin = `q0.025`, ymax = `q0.975`), alpha = 0.2) +
         geom_line() +
         rcartocolor::scale_colour_carto_d() +
         rcartocolor::scale_fill_carto_d() +
@@ -1132,7 +1153,7 @@ run_inlabru <- function(spp) {
       )
   }
 
-  summary_table_ <- map(res_tbl$name, gen_summary_table_, mod_list = res_map) |>
+  summary_table_ <- map(waic_res$Model, gen_summary_table_, mod_list = res_map) |>
     list_rbind() |>
     separate(
       var,
@@ -1169,7 +1190,7 @@ run_inlabru <- function(spp) {
 
   if (!run_a2) {
     ff_counts <- paste0(
-      "Intercept + RecLength  + t2se + time_group + doy +", #+ o
+      "surveytype + RecLength  + t2se + time_group + doy +", #+ o
       paste0("spat_cov_", pc_vars, collapse = "+"),
       "+ alpha"
     ) #|>
@@ -1200,6 +1221,7 @@ run_inlabru <- function(spp) {
     x4pred_t2se <- expand_grid(
       t2se_sc = seq(-1., 1., length.out = 100),
       event_gr = unique(df_std$event_gr),
+      type = "ARU recording",
       QPAD_offset = offsets_spp |>
         filter(dur == 5 & max_dist == Inf) |>
         distinct(o) |>
@@ -1210,7 +1232,7 @@ run_inlabru <- function(spp) {
       res,
       x4pred_t2se,
       ~ {
-        expect <- Intercept + time_group + t2se + RecLength #o +
+        expect <- surveytype + time_group + t2se + RecLength #o +
         1 - dpois(0, exp(expect))
         # exp(expect)
       },
@@ -1262,6 +1284,7 @@ run_inlabru <- function(spp) {
 
     x4pred_doy <- expand_grid(
       doy_r = seq(-1., 1., length.out = 100),
+      type = "ARU recording",
       QPAD_offset = offsets_spp |>
         filter(dur == 5 & max_dist == Inf) |>
         distinct(o) |>
@@ -1273,7 +1296,7 @@ run_inlabru <- function(spp) {
       res,
       x4pred_doy,
       ~ {
-        expect <- Intercept + doy + RecLength #o +
+        expect <- surveytype + doy + RecLength #o +
         1 - dpois(0, exp(expect))
       },
 
@@ -1316,7 +1339,7 @@ run_inlabru <- function(spp) {
       pred_c1 <- predict(
         mod,
         tibble({{ PC_var }} := xx4),
-        as.formula(paste0(" ~ exp(Intercept +", f_var, ")")),
+        as.formula(paste0(" ~ exp(surveytype +", f_var, ")")),
         n.samples = nsamp
       )
 

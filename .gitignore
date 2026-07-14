@@ -65,3 +65,4 @@ Model_Outputs/
 
 # ignore rds files as they're too heavy man
 *.rds
+.positai

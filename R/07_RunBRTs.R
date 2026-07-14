@@ -46,8 +46,8 @@ gen_spp_mod_list <- function(spp){
   
 }
 
-running_spp <- map(spp_to_run$species_name_clean, gen_spp_mod_list)
-list_c(running_spp) |>sort() |>  write_lines("specieslist.txt")
+# running_spp <- map(spp_to_run$species_name_clean, gen_spp_mod_list)
+# list_c(running_spp) |>sort() |>  write_lines("specieslist.txt")
 
 
 # spp_completed <- list.files(
@@ -60,27 +60,31 @@ list_c(running_spp) |>sort() |>  write_lines("specieslist.txt")
 # spp_to_run <- spp_codes_full_run$species_code[
 #   !spp_codes_full_run$species_code %in% spp_completed
 # ]
-# library(future)
-# options(future.globals.maxSize = 8000 * 1024^2)
-# if(str_detect(osVersion, "Windows")){
-#   plan(multisession, workers = 32, gc=T)
-# } else{
-#   plan(multicore, workers = 32, gc=T)
-# }
+library(future)
+options(future.globals.maxSize = 8000 * 1024^2)
+if(str_detect(osVersion, "Windows")){
+  plan(multisession, workers = 32, gc=T)
+} else{
+  plan(multicore, workers = 32, gc=T)
+}
 
 # mirai::daemons(32)
 # plan(future.mirai::mirai_multisession, workers = 32, queue = TRUE)
 # 
 # # library(mirai)
 # # daemons(32)
-# srb <- purrr::safely(run_brt , otherwise = {
-#   plan(sequential)})
+srb <- purrr::safely(run_brt )#, otherwise = {
+  # plan(sequential)})s
 # 
 # 
 # 
 # 
 # #   plan(multico, workers = 32)}
 # # run_brt("Sandhill Crane")
-# x <- purrr::map(spp_to_run$species_name_clean, srb)
+x <- purrr::map(spp_to_run$species_name_clean, srb,predict_only=T)
 # plan(sequential)
 # transpose(x) |> pluck('error')
+
+
+
+

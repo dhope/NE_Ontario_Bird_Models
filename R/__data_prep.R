@@ -63,6 +63,7 @@ if(run_INLA){
 
 
 # Spatial covariates compiled in )3_Site_Data.R
+
 spatial_cov <-
   spp_cov_file |>
   read_rds() %>%  {
@@ -168,7 +169,7 @@ prep_brt_data <- function(spp) {
   flush.console()
   
   # spp_name <- spp_list$species_name_clean[spp_list$species_code == spp]
-  spp_name <- spp_codes |> filter(species_name_clean==spp & spp_group == "Bird species") |> 
+  spp_name <- spp_codes |> filter(str_remove_all(species_name_clean, "\\'")==spp & spp_group == "Bird species") |> 
     distinct(species_name_clean, common_id)
   all_relavent_nnames <- filter(spp_codes, species_name_clean == spp |
                                   common_id %in% spp_name$common_id ) |> 
@@ -247,10 +248,10 @@ prep_brt_data <- function(spp) {
   }
   
   out_dir_spatial <- g(
-    "{BRT_output_loc_spatial}/{str_replace(spp, '\\\\s', '_')}"
+    "{BRT_output_loc_spatial}/{str_replace_all(spp, '\\\\s', '_')}"
   )
   out_dir <- g(
-    "{BRT_output_loc}/{str_replace(spp, '\\\\s', '_')}"
+    "{BRT_output_loc}/{str_replace_all(spp, '\\\\s', '_')}"
   )
   dir.create(
     out_dir_spatial,
@@ -368,6 +369,7 @@ prep_brt_data <- function(spp) {
     filter(doy >= start_doy & doy <= end_doy) |>
     select(-start_doy, -end_doy, -on_er)
   
+  as.list.environment(environment())
  
 }
 
@@ -375,7 +377,7 @@ prep_brt_data <- function(spp) {
 prep_inla_data <- function(spp, run_a2) {
   
   
-  spp_name <- spp_codes |> filter(species_name_clean==spp & spp_group == "Bird species") |> 
+  spp_name <- spp_codes |> filter(str_remove_all(species_name_clean, "\\'")==spp & spp_group == "Bird species") |> 
     distinct(species_name_clean, common_id)
   all_relavent_nnames <- filter(spp_codes, species_name_clean == spp |
                                   common_id %in% spp_name$common_id ) |> 
@@ -414,7 +416,7 @@ prep_inla_data <- function(spp, run_a2) {
   
   counts_spp <- filter(
     counts,
-    species_name_clean == spp_name$species_name_clean |
+    species_name_clean %in% c(spp_name$species_name_clean, spp) |
       common_id == spp_name$common_id 
   ) |>
     full_join(
